@@ -1,0 +1,6 @@
+{
+  "name": "ClickBarry",
+  "description": "ClickBarry – Your Product. Your Business. Discover digital products, connect with verified sellers, and grow with affiliate marketing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

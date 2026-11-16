@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-display: 'Outfit', system-ui, -apple-system, sans-serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #0c081e;
+    color: #f8fafc;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+/* Custom glow and berry effects */
+.berry-gradient-primary {
+  background: linear-gradient(135deg, #ff1b6b 0%, #d10056 50%, #90003e 100%);
+}
+
+.berry-glow {
+  box-shadow: 0 0 45px -8px rgba(255, 27, 107, 0.45);
+}
+
+.berry-glow-gold {
+  box-shadow: 0 0 35px -5px rgba(234, 179, 8, 0.35);
+}
+
+.berry-card-glass {
+  background: rgba(22, 16, 48, 0.75);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hero-space-bg {
+  background-color: #0b061d;
+  background-image: 
+    radial-gradient(circle at 75% 25%, rgba(225, 29, 114, 0.35) 0%, transparent 45%),
+    radial-gradient(circle at 20% 80%, rgba(126, 34, 206, 0.25) 0%, transparent 40%),
+    radial-gradient(circle at 50% 50%, rgba(26, 12, 60, 0.9) 0%, transparent 70%);
+}
+
+.section-light-bg {
+  background: #f8fafc;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0b061d;
+}
+::-webkit-scrollbar-thumb {
+  background: #382463;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #ec4899;
+}
