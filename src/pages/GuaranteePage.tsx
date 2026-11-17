@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { PageId } from '../types';
+import securityShieldImage from '../assets/images/gold_security_shield_1794019711572.jpg';
 import {
   ShieldCheck,
   RefreshCw,
@@ -25,8 +26,6 @@ export const GuaranteePage: React.FC<GuaranteePageProps> = ({
   const [orderId, setOrderId] = useState('');
   const [reason, setReason] = useState('');
   const [submitted, setSubmitted] = useState(false);
-
-  const securityShieldImage = '/src/assets/images/gold_security_shield_1794019711572.jpg';
 
   const handleSubmitClaim = (e: React.FormEvent) => {
     e.preventDefault();

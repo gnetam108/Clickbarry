@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { PageId } from '../types';
+import affiliateCoinsImage from '../assets/images/affiliate_coins_chart_1794019709558.jpg';
 import {
   TrendingUp,
   DollarSign,
@@ -26,8 +27,6 @@ export const ForAffiliatesPage: React.FC<ForAffiliatesPageProps> = ({
   const [conversionRate, setConversionRate] = useState(3); // 3%
   const [avgProductPrice, setAvgProductPrice] = useState(799);
   const [commissionRate, setCommissionRate] = useState(50); // 50%
-
-  const affiliateCoinsImage = '/src/assets/images/affiliate_coins_chart_1794019709558.jpg';
 
   // Math
   const monthlyClicks = dailyClicks * 30;

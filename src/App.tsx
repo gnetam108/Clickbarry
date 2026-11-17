@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { PageId, Product } from './types';
 import { ProductProvider, useProducts } from './context/ProductContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -32,12 +33,37 @@ import { SupabaseDevStatusBar } from './components/SupabaseDevStatusBar';
 import { CheckCircle2, AlertCircle, Info, X, LogOut, ShieldCheck } from 'lucide-react';
 import { validateSafeUrl } from './lib/tracking';
 
+const PAGE_PATHS: Record<Exclude<PageId, 'login' | 'signup'>, string> = {
+  home: '/',
+  marketplace: '/marketplace',
+  dashboard: '/dashboard',
+  admin: '/admin',
+  'how-it-works': '/how-it-works',
+  directory: '/directory',
+  guarantee: '/guarantee',
+  sellers: '/sellers',
+  affiliates: '/affiliates',
+  about: '/about',
+  contact: '/contact'
+};
+
+const PATH_TO_PAGE: Record<string, PageId> = Object.entries(PAGE_PATHS).reduce(
+  (acc, [pageId, path]) => {
+    acc[path] = pageId as PageId;
+    return acc;
+  },
+  {} as Record<string, PageId>
+);
+
 function AppContent() {
   const { user, profile, signOut, isPasswordRecovery } = useAuth();
   const { products, addProduct, updateProduct, recordClick, toast, hideToast } = useProducts();
   const { affiliateLinks, recordOutboundClick } = useHybridAffiliate();
+  const location = useLocation();
+  const navigate = useNavigate();
 
-  const [currentPage, setCurrentPage] = useState<PageId>('home');
+  const normalizedPath = location.pathname !== '/' ? location.pathname.replace(/\/+$/, '') : '/';
+  const currentPage: PageId = PATH_TO_PAGE[normalizedPath] || 'home';
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup' | 'forgot' | 'reset'>('login');
@@ -92,7 +118,8 @@ function AppContent() {
       setAuthModalOpen(true);
       return;
     }
-    setCurrentPage(page);
+    const targetPath = PAGE_PATHS[page] || '/';
+    navigate(targetPath);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -107,7 +134,7 @@ function AppContent() {
   };
 
   const handleAuthSuccess = (email: string) => {
-    setCurrentPage('dashboard');
+    navigate(PAGE_PATHS.dashboard);
   };
 
   const handleOpenAddModal = () => {
@@ -202,85 +229,109 @@ function AppContent() {
 
       {/* Main Page Body */}
       <main className="flex-1">
-        {currentPage === 'home' && (
-          <HomePage
-            onNavigate={navigateTo}
-            onOpenProductModal={(p) => setSelectedProduct(p)}
-            onOpenSignup={handleOpenSignup}
-            onOpenLogin={handleOpenLogin}
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <HomePage
+                onNavigate={navigateTo}
+                onOpenProductModal={(p) => setSelectedProduct(p)}
+                onOpenSignup={handleOpenSignup}
+                onOpenLogin={handleOpenLogin}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'marketplace' && (
-          <MarketplacePage
-            onOpenProductModal={(p) => setSelectedProduct(p)}
-            onNavigate={navigateTo}
-            onOpenSignup={handleOpenSignup}
+          <Route
+            path="/marketplace"
+            element={
+              <MarketplacePage
+                onOpenProductModal={(p) => setSelectedProduct(p)}
+                onNavigate={navigateTo}
+                onOpenSignup={handleOpenSignup}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'dashboard' && (
-          <SellerDashboardPage
-            onNavigate={navigateTo}
-            onOpenProductModal={(p) => setSelectedProduct(p)}
-            onOpenAddModal={handleOpenAddModal}
-            onOpenEditModal={handleOpenEditModal}
+          <Route
+            path="/dashboard"
+            element={
+              <SellerDashboardPage
+                onNavigate={navigateTo}
+                onOpenProductModal={(p) => setSelectedProduct(p)}
+                onOpenAddModal={handleOpenAddModal}
+                onOpenEditModal={handleOpenEditModal}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'admin' && (
-          <AdminDashboardPage
-            onNavigate={navigateTo}
-            onOpenProductModal={(p) => setSelectedProduct(p)}
+          <Route
+            path="/admin"
+            element={
+              <AdminDashboardPage
+                onNavigate={navigateTo}
+                onOpenProductModal={(p) => setSelectedProduct(p)}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'how-it-works' && (
-          <HowItWorksPage
-            onNavigate={navigateTo}
-            onOpenSignup={handleOpenSignup}
+          <Route
+            path="/how-it-works"
+            element={
+              <HowItWorksPage
+                onNavigate={navigateTo}
+                onOpenSignup={handleOpenSignup}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'directory' && (
-          <DirectoryPage
-            onNavigate={navigateTo}
-            onOpenProductModal={(p) => setSelectedProduct(p)}
-            onOpenSignup={handleOpenSignup}
+          <Route
+            path="/directory"
+            element={
+              <DirectoryPage
+                onNavigate={navigateTo}
+                onOpenProductModal={(p) => setSelectedProduct(p)}
+                onOpenSignup={handleOpenSignup}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'guarantee' && (
-          <GuaranteePage
-            onNavigate={navigateTo}
-            onOpenSignup={handleOpenSignup}
+          <Route
+            path="/guarantee"
+            element={
+              <GuaranteePage
+                onNavigate={navigateTo}
+                onOpenSignup={handleOpenSignup}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'sellers' && (
-          <ForSellersPage
-            onNavigate={navigateTo}
-            onOpenSignup={handleOpenSignup}
+          <Route
+            path="/sellers"
+            element={
+              <ForSellersPage
+                onNavigate={navigateTo}
+                onOpenSignup={handleOpenSignup}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'affiliates' && (
-          <ForAffiliatesPage
-            onNavigate={navigateTo}
-            onOpenSignup={handleOpenSignup}
+          <Route
+            path="/affiliates"
+            element={
+              <ForAffiliatesPage
+                onNavigate={navigateTo}
+                onOpenSignup={handleOpenSignup}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'about' && (
-          <AboutPage
-            onNavigate={navigateTo}
-            onOpenSignup={handleOpenSignup}
+          <Route
+            path="/about"
+            element={
+              <AboutPage
+                onNavigate={navigateTo}
+                onOpenSignup={handleOpenSignup}
+              />
+            }
           />
-        )}
-
-        {currentPage === 'contact' && (
-          <ContactPage onNavigate={navigateTo} />
-        )}
+          <Route
+            path="/contact"
+            element={<ContactPage onNavigate={navigateTo} />}
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </main>
 
       {/* Footer */}
@@ -311,25 +362,27 @@ function AppContent() {
       />
 
       {/* PayU Hosted Checkout Modal for Lifetime Seller Membership (₹999) */}
-      <PayUCheckoutModal onSuccessRedirect={() => setCurrentPage('dashboard')} />
+      <PayUCheckoutModal onSuccessRedirect={() => navigateTo('dashboard')} />
     </div>
   );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <ProductProvider>
-        <HybridAffiliateProvider>
-          <WalletProvider>
-            <AdminProvider>
-              <PayUMembershipProvider>
-                <AppContent />
-              </PayUMembershipProvider>
-            </AdminProvider>
-          </WalletProvider>
-        </HybridAffiliateProvider>
-      </ProductProvider>
-    </AuthProvider>
+    <BrowserRouter>
+      <AuthProvider>
+        <ProductProvider>
+          <HybridAffiliateProvider>
+            <WalletProvider>
+              <AdminProvider>
+                <PayUMembershipProvider>
+                  <AppContent />
+                </PayUMembershipProvider>
+              </AdminProvider>
+            </WalletProvider>
+          </HybridAffiliateProvider>
+        </ProductProvider>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }

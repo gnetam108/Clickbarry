@@ -1,6 +1,7 @@
 import React from 'react';
 import { PageId } from '../types';
 import { StrawberryLogo } from '../components/StrawberryLogo';
+import heroStrawberries from '../assets/images/hero_strawberries_1794019708249.jpg';
 import {
   Heart,
   Sparkles,
@@ -20,7 +21,6 @@ export const AboutPage: React.FC<AboutPageProps> = ({
   onNavigate,
   onOpenSignup
 }) => {
-  const heroStrawberries = '/src/assets/images/hero_strawberries_1794019708249.jpg';
 
   return (
     <div className="min-h-screen bg-[#0d0724] text-slate-100 py-12 px-4 sm:px-6 lg:px-8 space-y-16">

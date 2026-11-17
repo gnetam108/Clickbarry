@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { PageId } from '../types';
+import sellerLaptopImage from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
 import {
   Rocket,
   Check,
@@ -25,8 +26,6 @@ export const ForSellersPage: React.FC<ForSellersPageProps> = ({
 }) => {
   const [productPrice, setProductPrice] = useState(499);
   const [estimatedMonthlySales, setEstimatedMonthlySales] = useState(50);
-
-  const sellerLaptopImage = '/src/assets/images/seller_dashboard_laptop_1794019709659.jpg';
 
   // Calculator logic
   const grossRevenue = productPrice * estimatedMonthlySales;

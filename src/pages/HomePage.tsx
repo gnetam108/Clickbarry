@@ -3,6 +3,11 @@ import { PageId, Product } from '../types';
 import { TESTIMONIALS } from '../data/mockData';
 import { useProducts } from '../context/ProductContext';
 import { GoldSealBadge } from '../components/GoldSealBadge';
+import heroImage from '../assets/images/hero_strawberries_1794019708249.jpg';
+import sellerLaptopImage from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
+import affiliateCoinsImage from '../assets/images/affiliate_coins_chart_1794019709558.jpg';
+import securityShieldImage from '../assets/images/gold_security_shield_1794019711572.jpg';
+import rajeshAvatar from '../assets/images/seller_rajesh_avatar_1794019709871.jpg';
 import {
   CheckCircle,
   ArrowRight,
@@ -36,12 +41,6 @@ export const HomePage: React.FC<HomePageProps> = ({
 }) => {
   const { products, recordView, recordClick } = useProducts();
   const [activeTestimonialIndex, setActiveTestimonialIndex] = useState(0);
-
-  const heroImage = '/src/assets/images/hero_strawberries_1794019708249.jpg';
-  const sellerLaptopImage = '/src/assets/images/seller_dashboard_laptop_1794019709659.jpg';
-  const affiliateCoinsImage = '/src/assets/images/affiliate_coins_chart_1794019709558.jpg';
-  const securityShieldImage = '/src/assets/images/gold_security_shield_1794019711572.jpg';
-  const rajeshAvatar = '/src/assets/images/seller_rajesh_avatar_1794019709871.jpg';
 
   const currentTestimonial = TESTIMONIALS[activeTestimonialIndex];
 

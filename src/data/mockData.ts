@@ -1,4 +1,5 @@
 import { Product, Seller, Testimonial } from '../types';
+import rajeshAvatar from '../assets/images/seller_rajesh_avatar_1794019709871.jpg';
 
 export const SAMPLE_PRODUCTS: Product[] = [
   {
@@ -146,7 +147,7 @@ export const SAMPLE_SELLERS: Seller[] = [
     id: 'seller-1',
     name: 'Rajesh Kumar',
     brand: 'Rajesh Kumar Studio',
-    avatar: '/src/assets/images/seller_rajesh_avatar_1794019709871.jpg',
+    avatar: rajeshAvatar,
     bio: 'Digital creator and productivity architect helping solopreneurs build automated systems.',
     category: 'Productivity & Notion Systems',
     totalProducts: 8,
@@ -202,7 +203,7 @@ export const TESTIMONIALS: Testimonial[] = [
     name: 'Rajesh Kumar',
     role: 'Seller',
     type: 'seller',
-    avatar: '/src/assets/images/seller_rajesh_avatar_1794019709871.jpg',
+    avatar: rajeshAvatar,
     content: 'ClickBarry is an amazing platform! Easy to use, trusted and really helpful.',
     rating: 5,
     location: 'Bengaluru, India'
