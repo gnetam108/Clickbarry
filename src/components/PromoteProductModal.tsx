@@ -92,15 +92,14 @@ export const PromoteProductModal: React.FC<PromoteProductModalProps> = ({
           <X className="w-5 h-5" />
         </button>
 
-        {/* Header */}
         <div className="space-y-1">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-pink-500/20 text-pink-300 text-xs font-bold uppercase tracking-wider border border-pink-500/30">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Method A: Promote Marketplace Product</span>
+            <span>Affiliate Promotion Link</span>
           </div>
           <h2 className="text-2xl font-black text-white">Generate Your Affiliate Link</h2>
           <p className="text-xs text-slate-300">
-            Earn <strong>{product.commissionRate}% commission (₹{potentialEarnings})</strong> for every customer who buys via your tracking link.
+            Earn <strong>{product.commissionRate}% commission (₹{potentialEarnings})</strong> per verified sale through your tracking link.
           </p>
         </div>
 

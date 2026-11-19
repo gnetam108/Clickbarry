@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Product, ToastMessage } from '../types';
-import { SAMPLE_PRODUCTS } from '../data/mockData';
 import { supabase } from '../lib/supabase';
+import { useAuth } from './AuthContext';
+import defaultProductCover from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
 
 export interface AddProductInput {
   title: string;
@@ -25,6 +26,9 @@ export interface SellerAnalytics {
   totalProducts: number;
   publishedProducts: number;
   draftProducts: number;
+  pendingProducts: number;
+  approvedProducts: number;
+  rejectedProducts: number;
   totalViews: number;
   totalClicks: number;
   ctr: string;
@@ -32,14 +36,16 @@ export interface SellerAnalytics {
 }
 
 interface ProductContextType {
-  products: Product[];
+  products: Product[]; // Public Marketplace ONLY: status === 'published' && approvalStatus === 'approved'
   realProducts: Product[];
+  allProducts: Product[]; // Admin catalog: all products across pending/approved/rejected/draft
   sellerProducts: Product[];
   isLoading: boolean;
   toast: ToastMessage | null;
   showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   hideToast: () => void;
   refreshProducts: () => Promise<void>;
+  fetchAllProductsAdmin: () => Promise<Product[]>;
   fetchSellerProducts: (sellerId: string) => Promise<Product[]>;
   addProduct: (productData: AddProductInput) => Promise<{ success: boolean; product?: Product; error?: string }>;
   updateProduct: (id: string, updates: Partial<Product>) => Promise<{ success: boolean; error?: string }>;
@@ -48,10 +54,7 @@ interface ProductContextType {
   recordClick: (id: string) => Promise<void>;
   fetchSellerAnalytics: (sellerId: string) => Promise<SellerAnalytics>;
   uploadProductImage: (file: File, sellerId: string) => Promise<{ success: boolean; url?: string; error?: string }>;
-  resetDemoData: () => void;
 }
-
-const STORAGE_KEY = 'clickbarry_demo_products_v3';
 
 const CATEGORY_LABELS: Record<string, string> = {
   templates: 'Notion & Template',
@@ -64,21 +67,10 @@ const CATEGORY_LABELS: Record<string, string> = {
 const ProductContext = createContext<ProductContextType | undefined>(undefined);
 
 export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isAdmin } = useAuth();
   const [realProducts, setRealProducts] = useState<Product[]>([]);
+  const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [sellerProducts, setSellerProducts] = useState<Product[]>([]);
-  const [demoProducts, setDemoProducts] = useState<Product[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch {
-      // fallback
-    }
-    return SAMPLE_PRODUCTS;
-  });
-
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
@@ -98,43 +90,54 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, [toast]);
 
-  // Helper to map Supabase database row to Product interface
-  const mapDbRowToProduct = (row: any, profileMap?: Record<string, string>): Product => {
-    const sellerName = profileMap?.[row.seller_id] || (row.profiles ? row.profiles.full_name : null) || 'Verified Affiliate Partner';
-    const finalAffiliateUrl = row.affiliate_url || row.original_url || '';
-    const finalMerchant = row.merchant_name || 'Independent Creator / Brand';
+  const mapDbRowToProduct = (
+    row: any,
+    profileMap?: Record<string, { fullName: string; verified: boolean }>,
+    metricsMap?: Record<string, { views: number; clicks: number; sales: number }>
+  ): Product => {
+    const sellerProfile = profileMap?.[row.seller_id];
+    const sellerName =
+      sellerProfile?.fullName ||
+      (row.profiles ? row.profiles.full_name : null) ||
+      row.merchant_name ||
+      'Verified Creator';
+    const finalUrl = row.affiliate_url || row.original_url || '';
+    const finalMerchant = row.merchant_name || sellerName;
+    const stats = metricsMap?.[row.id] || { views: 0, clicks: 0, sales: 0 };
 
     return {
       id: row.id,
       title: row.title,
-      price: Number(row.price),
-      originalPrice: Math.round(Number(row.price) * 1.5),
-      commissionRate: Number(row.commission_rate) || 40,
-      category: row.category,
+      price: Number(row.price) || 0,
+      originalPrice: Number(row.price) || 0,
+      commissionRate: Number(row.commission_rate) || 0,
+      category: row.category || 'templates',
       categoryLabel: CATEGORY_LABELS[row.category] || 'Digital Product',
       description: row.description || '',
-      originalUrl: finalAffiliateUrl,
-      affiliateUrl: finalAffiliateUrl,
+      originalUrl: finalUrl,
+      affiliateUrl: finalUrl,
       merchantName: finalMerchant,
       merchantWebsite: row.merchant_website || '',
-      approvalStatus: row.approval_status || 'approved',
-      image: row.image_url || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=600&q=80',
-      fileFormat: 'Affiliate Referral Link',
+      approvalStatus: (row.approval_status as Product['approvalStatus']) || 'pending',
+      isFeatured: Boolean(row.is_featured),
+      rejectionReason: row.rejection_reason || undefined,
+      image: row.image_url || defaultProductCover,
+      fileFormat: 'Digital Product',
       features: [
-        `Discover & purchase via verified merchant: ${finalMerchant}`,
-        'Direct instant redirect to product destination',
-        'Verified ClickBarry affiliate catalog'
+        `Listed by ${finalMerchant}`,
+        `${Number(row.commission_rate) || 0}% Affiliate Commission`,
+        'Instant tracking link ready for Affiliates'
       ],
       sellerName,
-      sellerVerified: true,
+      sellerVerified: sellerProfile?.verified ?? false,
       sellerId: row.seller_id,
       affiliateId: row.seller_id,
-      status: row.status,
+      status: row.status || 'published',
       rating: 5.0,
-      reviewsCount: 1,
-      salesCount: 0,
-      views: 0,
-      clicks: 0,
+      reviewsCount: 0,
+      salesCount: stats.sales,
+      views: stats.views,
+      clicks: stats.clicks,
       isDemo: false,
       isRealDb: true,
       createdAt: row.created_at,
@@ -142,56 +145,133 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   };
 
-  // Fetch all published products from Supabase
+  // Hydrate seller profiles & real event/click/sale counts for a batch of DB rows
+  const hydrateProducts = async (rows: any[]): Promise<Product[]> => {
+    if (!supabase || rows.length === 0) return [];
+
+    const sellerIds = Array.from(new Set(rows.map((r) => r.seller_id).filter(Boolean)));
+    const productIds = rows.map((r) => r.id);
+    const profileMap: Record<string, { fullName: string; verified: boolean }> = {};
+    const metricsMap: Record<string, { views: number; clicks: number; sales: number }> = {};
+
+    if (sellerIds.length > 0) {
+      try {
+        const { data: profs } = await supabase
+          .from('profiles')
+          .select('id, full_name, seller_verified')
+          .in('id', sellerIds);
+        if (profs) {
+          profs.forEach((p: any) => {
+            if (p.id) {
+              profileMap[p.id] = {
+                fullName: p.full_name || 'Creator',
+                verified: Boolean(p.seller_verified)
+              };
+            }
+          });
+        }
+      } catch {}
+    }
+
+    try {
+      const [eventsRes, clicksRes, salesRes] = await Promise.all([
+        supabase.from('product_events').select('product_id, event_type').in('product_id', productIds),
+        supabase.from('affiliate_clicks').select('product_id').in('product_id', productIds),
+        supabase
+          .from('commission_records')
+          .select('product_id, status')
+          .in('product_id', productIds)
+          .in('status', ['verified', 'paid'])
+      ]);
+
+      const ensure = (pid: string) => {
+        if (!metricsMap[pid]) metricsMap[pid] = { views: 0, clicks: 0, sales: 0 };
+        return metricsMap[pid];
+      };
+
+      eventsRes.data?.forEach((ev: any) => {
+        const m = ensure(ev.product_id);
+        if (ev.event_type === 'view') m.views++;
+        if (ev.event_type === 'shop_click') m.clicks++;
+      });
+
+      clicksRes.data?.forEach((clk: any) => {
+        if (clk.product_id) ensure(clk.product_id).clicks++;
+      });
+
+      salesRes.data?.forEach((sale: any) => {
+        if (sale.product_id) ensure(sale.product_id).sales++;
+      });
+    } catch {}
+
+    return rows.map((r) => mapDbRowToProduct(r, profileMap, metricsMap));
+  };
+
+  // Public Marketplace: strictly published + approved products from Supabase
   const refreshProducts = useCallback(async () => {
     if (!supabase) {
+      setRealProducts([]);
       setIsLoading(false);
       return;
     }
 
     try {
       setIsLoading(true);
-      const { data, error } = await supabase
+      let queryRes = await supabase
         .from('products')
         .select('*')
         .eq('status', 'published')
+        .eq('approval_status', 'approved')
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.warn('Could not fetch products from Supabase:', error.message);
-      } else if (data) {
-        // Collect seller profiles for display names
-        const sellerIds = Array.from(new Set(data.map((r) => r.seller_id).filter(Boolean)));
-        let profileMap: Record<string, string> = {};
+      if (queryRes.error && queryRes.error.message?.includes('approval_status')) {
+        // Fallback if migration hasn't added approval_status column yet
+        queryRes = await supabase
+          .from('products')
+          .select('*')
+          .eq('status', 'published')
+          .order('created_at', { ascending: false });
+      }
 
-        if (sellerIds.length > 0) {
-          try {
-            const { data: profs } = await supabase
-              .from('profiles')
-              .select('id, full_name');
-            if (profs) {
-              profs.forEach((p) => {
-                if (p.id && p.full_name) profileMap[p.id] = p.full_name;
-              });
-            }
-          } catch {
-            // Ignore if RLS restricts other profiles
-          }
-        }
-
-        const mapped = data.map((r) => mapDbRowToProduct(r, profileMap));
-        setRealProducts(mapped);
+      if (queryRes.error) {
+        console.warn('Could not fetch products from Supabase:', queryRes.error.message);
+        setRealProducts([]);
+      } else if (queryRes.data) {
+        const hydrated = await hydrateProducts(queryRes.data);
+        setRealProducts(hydrated.filter((p) => p.status === 'published' && p.approvalStatus === 'approved'));
       }
     } catch (err) {
       console.warn('Error refreshing products:', err);
+      setRealProducts([]);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
+  // Admin catalog: all products across pending, approved, rejected, draft
+  const fetchAllProductsAdmin = useCallback(async (): Promise<Product[]> => {
+    if (!supabase || !isAdmin) return [];
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error || !data) return [];
+      const hydrated = await hydrateProducts(data);
+      setAllProducts(hydrated);
+      return hydrated;
+    } catch {
+      return [];
+    }
+  }, [isAdmin]);
+
   // Fetch products for a specific authenticated seller
   const fetchSellerProducts = useCallback(async (sellerId: string): Promise<Product[]> => {
-    if (!supabase || !sellerId) return [];
+    if (!supabase || !sellerId) {
+      setSellerProducts([]);
+      return [];
+    }
 
     try {
       const { data, error } = await supabase
@@ -200,35 +280,42 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         .eq('seller_id', sellerId)
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.warn('Error fetching seller products:', error);
+      if (error || !data) {
+        setSellerProducts([]);
         return [];
       }
 
-      if (data) {
-        const mapped = data.map((r) => mapDbRowToProduct(r));
-        setSellerProducts(mapped);
-        return mapped;
-      }
-      return [];
-    } catch (e) {
-      console.warn('Exception fetching seller products:', e);
+      const hydrated = await hydrateProducts(data);
+      setSellerProducts(hydrated);
+      return hydrated;
+    } catch {
+      setSellerProducts([]);
       return [];
     }
   }, []);
 
-  // Initial load on mount
   useEffect(() => {
     refreshProducts();
   }, [refreshProducts]);
 
-  // Combined product list (Real published products first, then sample demo products clearly marked)
-  const products: Product[] = [
-    ...realProducts,
-    ...demoProducts
-  ];
+  useEffect(() => {
+    if (isAdmin) {
+      fetchAllProductsAdmin();
+    } else {
+      setAllProducts([]);
+    }
+  }, [isAdmin, fetchAllProductsAdmin]);
 
-  // REAL ADD PRODUCT (Affiliate Product Listing)
+  useEffect(() => {
+    if (!user) {
+      setSellerProducts([]);
+    }
+  }, [user]);
+
+  // Public Marketplace contains ONLY real approved & published DB products (zero demo products)
+  const products: Product[] = realProducts;
+
+  // ADD PRODUCT (Defaults Seller submissions to approvalStatus: 'pending')
   const addProduct = async (
     productData: AddProductInput
   ): Promise<{ success: boolean; product?: Product; error?: string }> => {
@@ -240,18 +327,19 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     try {
       const { data: authData, error: authError } = await supabase.auth.getUser();
       if (authError || !authData.user) {
-        showToast('You must be logged in as an affiliate to submit products', 'error');
-        return { success: false, error: 'Unauthorized: Affiliate login required' };
+        showToast('You must be logged in as a Seller to submit products', 'error');
+        return { success: false, error: 'Unauthorized: Seller login required' };
       }
 
       const sellerId = authData.user.id;
-
-      // Safe URL normalization for affiliate tracking link
       const targetUrl = productData.affiliateUrl || productData.originalUrl;
       let cleanUrl = targetUrl.trim();
       if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
         cleanUrl = 'https://' + cleanUrl;
       }
+
+      const desiredApproval: 'approved' | 'pending' | 'rejected' =
+        isAdmin && productData.approvalStatus ? productData.approvalStatus : 'pending';
 
       const baseRow: any = {
         seller_id: sellerId,
@@ -261,17 +349,16 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         description: productData.description.trim(),
         category: productData.category,
         original_url: cleanUrl,
-        status: productData.status || 'draft'
+        status: productData.status || 'published'
       };
 
-      // Try inserting with affiliate fields first
       const fullRow = {
         ...baseRow,
-        merchant_name: (productData.merchantName || 'Direct Merchant').trim(),
+        merchant_name: (productData.merchantName || 'Independent Creator').trim(),
         affiliate_url: cleanUrl,
-        commission_rate: Number(productData.commissionRate) || 40,
+        commission_rate: Number(productData.commissionRate ?? 40),
         merchant_website: productData.merchantWebsite ? productData.merchantWebsite.trim() : null,
-        approval_status: productData.approvalStatus || 'approved'
+        approval_status: desiredApproval
       };
 
       let insertedData: any = null;
@@ -282,14 +369,8 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         .single();
 
       if (error) {
-        // If column error occurs (migration not run yet in user Supabase), fallback to base columns
-        console.warn('Full affiliate insert warning, retrying with standard schema:', error.message);
-        const retryRes = await supabase
-          .from('products')
-          .insert(baseRow)
-          .select()
-          .single();
-
+        console.warn('Full product insert warning, retrying with base schema:', error.message);
+        const retryRes = await supabase.from('products').insert(baseRow).select().single();
         if (retryRes.error) {
           showToast(`Failed to add product: ${retryRes.error.message}`, 'error');
           return { success: false, error: retryRes.error.message };
@@ -300,35 +381,30 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
 
       const newProd = mapDbRowToProduct(insertedData);
-      if (newProd.status === 'published') {
-        setRealProducts((prev) => [newProd, ...prev]);
-      }
       setSellerProducts((prev) => [newProd, ...prev]);
 
-      showToast(`Affiliate product "${newProd.title}" submitted successfully!`, 'success');
+      if (newProd.approvalStatus === 'approved' && newProd.status === 'published') {
+        setRealProducts((prev) => [newProd, ...prev]);
+        showToast(`Product "${newProd.title}" published!`, 'success');
+      } else {
+        showToast(`Product "${newProd.title}" submitted for Admin approval!`, 'success');
+      }
+
       await refreshProducts();
+      if (isAdmin) await fetchAllProductsAdmin();
       return { success: true, product: newProd };
     } catch (err: any) {
-      const msg = err?.message || 'Unexpected error creating affiliate product';
+      const msg = err?.message || 'Unexpected error creating product';
       showToast(msg, 'error');
       return { success: false, error: msg };
     }
   };
 
-  // REAL UPDATE PRODUCT
+  // UPDATE PRODUCT
   const updateProduct = async (
     id: string,
     updates: Partial<Product>
   ): Promise<{ success: boolean; error?: string }> => {
-    // If it's a demo product, update local state
-    if (!id.includes('-') || id.startsWith('prod-demo') || id.startsWith('prod-custom')) {
-      setDemoProducts((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
-      );
-      showToast('Demo product updated successfully!', 'success');
-      return { success: true };
-    }
-
     if (!supabase) {
       showToast('Supabase client not ready', 'error');
       return { success: false, error: 'Supabase client not initialized' };
@@ -352,30 +428,24 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (updates.merchantName !== undefined) dbUpdates.merchant_name = updates.merchantName.trim();
       if (updates.commissionRate !== undefined) dbUpdates.commission_rate = Number(updates.commissionRate);
       if (updates.merchantWebsite !== undefined) dbUpdates.merchant_website = updates.merchantWebsite.trim();
-      if (updates.approvalStatus !== undefined) dbUpdates.approval_status = updates.approvalStatus;
       if (updates.image !== undefined) dbUpdates.image_url = updates.image.trim();
       if (updates.status !== undefined) dbUpdates.status = updates.status;
 
-      // Attempt update with all fields
-      const { error } = await supabase
-        .from('products')
-        .update(dbUpdates)
-        .eq('id', id);
+      // Only Admin can approve/reject/feature products from client
+      if (isAdmin) {
+        if (updates.approvalStatus !== undefined) dbUpdates.approval_status = updates.approvalStatus;
+        if (updates.rejectionReason !== undefined) dbUpdates.rejection_reason = updates.rejectionReason;
+        if (updates.isFeatured !== undefined) dbUpdates.is_featured = updates.isFeatured;
+      }
+
+      const { error } = await supabase.from('products').update(dbUpdates).eq('id', id);
 
       if (error) {
-        // Fallback without new columns if needed
-        const baseUpdates: any = {
-          updated_at: new Date().toISOString()
-        };
+        const baseUpdates: any = { updated_at: new Date().toISOString() };
         if (updates.title !== undefined) baseUpdates.title = updates.title.trim();
         if (updates.price !== undefined) baseUpdates.price = Number(updates.price);
         if (updates.description !== undefined) baseUpdates.description = updates.description.trim();
         if (updates.category !== undefined) baseUpdates.category = updates.category;
-        if (updates.originalUrl !== undefined || updates.affiliateUrl !== undefined) {
-          let clean = (updates.affiliateUrl || updates.originalUrl || '').trim();
-          if (clean && !clean.startsWith('http://') && !clean.startsWith('https://')) clean = 'https://' + clean;
-          baseUpdates.original_url = clean;
-        }
         if (updates.image !== undefined) baseUpdates.image_url = updates.image.trim();
         if (updates.status !== undefined) baseUpdates.status = updates.status;
 
@@ -386,15 +456,12 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       }
 
-      setSellerProducts((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
-      );
-      setRealProducts((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
-      );
+      setSellerProducts((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+      setAllProducts((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+      await refreshProducts();
+      if (isAdmin) await fetchAllProductsAdmin();
 
       showToast('Product updated successfully!', 'success');
-      await refreshProducts();
       return { success: true };
     } catch (err: any) {
       const msg = err?.message || 'Error updating product';
@@ -403,25 +470,15 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  // REAL DELETE PRODUCT
+  // DELETE PRODUCT
   const deleteProduct = async (id: string): Promise<{ success: boolean; error?: string }> => {
-    // If it's a demo product, remove from local demo state
-    if (!id.includes('-') || id.startsWith('prod-demo') || id.startsWith('prod-custom')) {
-      setDemoProducts((prev) => prev.filter((p) => p.id !== id));
-      showToast('Demo product removed', 'info');
-      return { success: true };
-    }
-
     if (!supabase) {
       showToast('Supabase client not ready', 'error');
       return { success: false, error: 'Supabase client not initialized' };
     }
 
     try {
-      const { error } = await supabase
-        .from('products')
-        .delete()
-        .eq('id', id);
+      const { error } = await supabase.from('products').delete().eq('id', id);
 
       if (error) {
         showToast(`Failed to delete product: ${error.message}`, 'error');
@@ -430,6 +487,7 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       setSellerProducts((prev) => prev.filter((p) => p.id !== id));
       setRealProducts((prev) => prev.filter((p) => p.id !== id));
+      setAllProducts((prev) => prev.filter((p) => p.id !== id));
       showToast('Product deleted from database', 'info');
       await refreshProducts();
       return { success: true };
@@ -440,18 +498,11 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  // REAL ANALYTICS: Track view event
+  // Track real view event
   const recordView = async (id: string): Promise<void> => {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-    if (!isUuid) {
-      // Demo product local view count
-      setDemoProducts((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, views: (p.views || 0) + 1 } : p))
-      );
-      return;
-    }
+    if (!isUuid || !supabase) return;
 
-    // De-duplicate view count in current browser session
     const sessionKey = `cb_view_${id}`;
     if (typeof window !== 'undefined' && sessionStorage.getItem(sessionKey)) {
       return;
@@ -460,45 +511,37 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
       sessionStorage.setItem(sessionKey, '1');
     }
 
-    if (!supabase) return;
     try {
       await supabase.from('product_events').insert({
         product_id: id,
         event_type: 'view'
       });
-    } catch {
-      // ignore
-    }
+    } catch {}
   };
 
-  // REAL ANALYTICS: Track Shop Now click event (Affiliate Outbound Click)
+  // Track outbound product click event
   const recordClick = async (id: string): Promise<void> => {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-    if (!isUuid) {
-      setDemoProducts((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, clicks: (p.clicks || 0) + 1 } : p))
-      );
-      return;
-    }
+    if (!isUuid || !supabase) return;
 
-    if (!supabase) return;
     try {
       await supabase.from('product_events').insert({
         product_id: id,
         event_type: 'shop_click'
       });
-    } catch {
-      // ignore
-    }
+    } catch {}
   };
 
-  // REAL ANALYTICS: Fetch seller's real event counts
+  // Fetch seller's real event counts
   const fetchSellerAnalytics = async (sellerId: string): Promise<SellerAnalytics> => {
     if (!supabase || !sellerId) {
       return {
         totalProducts: 0,
         publishedProducts: 0,
         draftProducts: 0,
+        pendingProducts: 0,
+        approvedProducts: 0,
+        rejectedProducts: 0,
         totalViews: 0,
         totalClicks: 0,
         ctr: '0.0%',
@@ -507,26 +550,27 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
 
     try {
-      // Fetch seller's products
       const { data: prods } = await supabase
         .from('products')
-        .select('id, status')
+        .select('id, status, approval_status')
         .eq('seller_id', sellerId);
 
+      const prodIds = (prods || []).map((p: any) => p.id);
       const totalProducts = prods ? prods.length : 0;
       const publishedProducts = prods ? prods.filter((p) => p.status === 'published').length : 0;
       const draftProducts = prods ? prods.filter((p) => p.status === 'draft').length : 0;
+      const pendingProducts = prods ? prods.filter((p) => p.approval_status === 'pending').length : 0;
+      const approvedProducts = prods ? prods.filter((p) => p.approval_status === 'approved').length : 0;
+      const rejectedProducts = prods ? prods.filter((p) => p.approval_status === 'rejected').length : 0;
 
-      // Fetch events (RLS automatically filters product_events for only this seller's products)
-      const { data: events, error } = await supabase
-        .from('product_events')
-        .select('id, product_id, event_type, created_at');
-
-      if (error || !events) {
+      if (prodIds.length === 0) {
         return {
           totalProducts,
           publishedProducts,
           draftProducts,
+          pendingProducts,
+          approvedProducts,
+          rejectedProducts,
           totalViews: 0,
           totalClicks: 0,
           ctr: '0.0%',
@@ -534,15 +578,19 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         };
       }
 
+      const [eventsRes, affClicksRes] = await Promise.all([
+        supabase.from('product_events').select('id, product_id, event_type').in('product_id', prodIds),
+        supabase.from('affiliate_clicks').select('id, product_id').in('product_id', prodIds)
+      ]);
+
       let totalViews = 0;
       let totalClicks = 0;
       const perProduct: Record<string, { views: number; clicks: number; ctr: string }> = {};
 
-      events.forEach((ev) => {
+      eventsRes.data?.forEach((ev: any) => {
         if (!perProduct[ev.product_id]) {
           perProduct[ev.product_id] = { views: 0, clicks: 0, ctr: '0.0%' };
         }
-
         if (ev.event_type === 'view') {
           totalViews++;
           perProduct[ev.product_id].views++;
@@ -552,7 +600,15 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       });
 
-      // Calculate CTR for each product
+      affClicksRes.data?.forEach((clk: any) => {
+        if (!clk.product_id) return;
+        if (!perProduct[clk.product_id]) {
+          perProduct[clk.product_id] = { views: 0, clicks: 0, ctr: '0.0%' };
+        }
+        totalClicks++;
+        perProduct[clk.product_id].clicks++;
+      });
+
       Object.keys(perProduct).forEach((pid) => {
         const item = perProduct[pid];
         item.ctr = item.views > 0 ? ((item.clicks / item.views) * 100).toFixed(1) + '%' : '0.0%';
@@ -564,17 +620,22 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         totalProducts,
         publishedProducts,
         draftProducts,
+        pendingProducts,
+        approvedProducts,
+        rejectedProducts,
         totalViews,
         totalClicks,
         ctr,
         perProduct
       };
-    } catch (e) {
-      console.warn('Error fetching seller analytics:', e);
+    } catch {
       return {
         totalProducts: 0,
         publishedProducts: 0,
         draftProducts: 0,
+        pendingProducts: 0,
+        approvedProducts: 0,
+        rejectedProducts: 0,
         totalViews: 0,
         totalClicks: 0,
         ctr: '0.0%',
@@ -583,7 +644,7 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  // REAL STORAGE: Upload product image to 'product-images' bucket
+  // Upload product image to 'product-images' bucket
   const uploadProductImage = async (
     file: File,
     sellerId: string
@@ -592,7 +653,6 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return { success: false, error: 'Supabase client not initialized' };
     }
 
-    // 1. File type validation
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
     if (!allowedTypes.includes(file.type)) {
       return {
@@ -601,7 +661,6 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
       };
     }
 
-    // 2. File size validation (5 MB limit)
     const maxSizeBytes = 5 * 1024 * 1024;
     if (file.size > maxSizeBytes) {
       return {
@@ -611,13 +670,10 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
 
     try {
-      // Folder structure: ${sellerId}/${timestamp}-${sanitized_name}
-      // Matches the RLS policy: (auth.uid())::text = (storage.foldername(name))[1]
-      const fileExt = file.name.split('.').pop() || 'jpg';
       const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
       const filePath = `${sellerId}/${Date.now()}-${cleanName}`;
 
-      const { data, error } = await supabase.storage
+      const { error } = await supabase.storage
         .from('product-images')
         .upload(filePath, file, {
           cacheControl: '3600',
@@ -625,21 +681,11 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
 
       if (error) {
-        return {
-          success: false,
-          error: error.message
-        };
+        return { success: false, error: error.message };
       }
 
-      // Retrieve public CDN URL
-      const { data: urlData } = supabase.storage
-        .from('product-images')
-        .getPublicUrl(filePath);
-
-      return {
-        success: true,
-        url: urlData.publicUrl
-      };
+      const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(filePath);
+      return { success: true, url: urlData.publicUrl };
     } catch (err: any) {
       return {
         success: false,
@@ -648,27 +694,19 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  const resetDemoData = () => {
-    setDemoProducts(SAMPLE_PRODUCTS);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(SAMPLE_PRODUCTS));
-    } catch {
-      // ignore
-    }
-    showToast('Demo products restored to default state', 'info');
-  };
-
   return (
     <ProductContext.Provider
       value={{
         products,
         realProducts,
+        allProducts,
         sellerProducts,
         isLoading,
         toast,
         showToast,
         hideToast,
         refreshProducts,
+        fetchAllProductsAdmin,
         fetchSellerProducts,
         addProduct,
         updateProduct,
@@ -676,8 +714,7 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         recordView,
         recordClick,
         fetchSellerAnalytics,
-        uploadProductImage,
-        resetDemoData
+        uploadProductImage
       }}
     >
       {children}

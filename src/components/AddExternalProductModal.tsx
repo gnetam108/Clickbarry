@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useProducts } from '../context/ProductContext';
 import { useAuth } from '../context/AuthContext';
+import defaultProductCover from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
 
 interface AddExternalProductModalProps {
   isOpen: boolean;
@@ -53,10 +54,7 @@ export const AddExternalProductModal: React.FC<AddExternalProductModalProps> = (
   const [category, setCategory] = useState<'templates' | 'courses' | 'software' | 'ebooks' | 'graphics'>(
     editingProduct?.category || 'templates'
   );
-  const [image, setImage] = useState(
-    editingProduct?.imageUrl ||
-      'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=600&q=80'
-  );
+  const [image, setImage] = useState(editingProduct?.imageUrl || defaultProductCover);
   const [status, setStatus] = useState<'published' | 'draft'>((editingProduct?.status as any) || 'published');
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -346,8 +344,8 @@ export const AddExternalProductModal: React.FC<AddExternalProductModalProps> = (
             </label>
             <div className="flex gap-2 items-center">
               <input
-                type="url"
-                placeholder="https://images.unsplash.com/..."
+                type="text"
+                placeholder="https://yourdomain.com/product-cover.jpg"
                 value={image}
                 onChange={(e) => setImage(e.target.value)}
                 className="flex-1 px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-pink-500 font-mono"

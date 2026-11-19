@@ -7,6 +7,7 @@ import { useWallet } from '../context/WalletContext';
 import { useAuth } from '../context/AuthContext';
 import { usePayUMembership } from '../context/PayUMembershipContext';
 import { AdminProcessPayoutModal } from '../components/AdminProcessPayoutModal';
+import defaultProductCover from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
 import {
   LayoutDashboard,
   Users,
@@ -83,6 +84,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     auditLogs,
     dateFilter,
     setDateFilter,
+    customDateRange,
+    setCustomDateRange,
+    isInDateRange,
     updateUserStatus,
     toggleSellerVerification,
     updateSubscriptionStatus,
@@ -100,10 +104,15 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     isLoading
   } = useAdmin();
 
-  const { products, updateProduct } = useProducts();
-  const { externalProducts, affiliateLinks, recentClicks, commissionRecords } = useHybridAffiliate();
-  const { allWithdrawals, adminUpdatePayout, settings: payoutSettings, updateSettings: updatePayoutSettings } = useWallet();
-  const { allMembershipPayments } = usePayUMembership();
+  const { allProducts } = useProducts();
+  const {
+    externalProducts,
+    allAffiliateLinks,
+    allRecentClicks,
+    allCommissionRecords
+  } = useHybridAffiliate();
+  const { allWithdrawals } = useWallet();
+  const { allMembershipPayments, isPaymentGatewayEnabled } = usePayUMembership();
 
   // Navigation State
   const [activeSection, setActiveSection] = useState<AdminSection>('overview');
@@ -136,33 +145,42 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
   const [newCatIcon, setNewCatIcon] = useState('Folder');
 
   const [adminPayoutModalTarget, setAdminPayoutModalTarget] = useState<WithdrawalRequest | null>(null);
+  const [deleteProductTarget, setDeleteProductTarget] = useState<Product | null>(null);
+  const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<PlatformCategory | null>(null);
 
   // Settings local form state
   const [tempSettings, setTempSettings] = useState(settings);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
-  // KPI Calculations
+  // Date-filtered metrics & real DB KPI Calculations
   const stats = useMemo(() => {
-    const totalUsers = users.length;
-    const sellers = users.filter((u) => u.role === 'seller' || u.role === 'both');
-    const affiliates = users.filter((u) => u.role === 'affiliate' || u.role === 'both');
-    const activeUsers = users.filter((u) => u.status === 'active').length;
+    const datedUsers = users.filter((u) => isInDateRange(u.createdAt));
+    const totalUsers = datedUsers.length;
+    const sellers = datedUsers.filter((u) => u.role === 'seller' || u.role === 'both');
+    const affiliates = datedUsers.filter((u) => u.role === 'affiliate' || u.role === 'both');
+    const activeUsers = datedUsers.filter((u) => u.status === 'active').length;
 
-    const totalListed = products.length + externalProducts.length;
-    const pendingProducts = products.filter((p) => p.approvalStatus === 'pending' || p.status === 'draft').length;
+    const datedProducts = allProducts.filter((p) => isInDateRange(p.createdAt));
+    const datedExternal = externalProducts.filter((p) => isInDateRange(p.createdAt));
+    const totalListed = datedProducts.length + datedExternal.length;
+    const pendingProducts = allProducts.filter((p) => p.approvalStatus === 'pending' || p.status === 'draft').length;
 
-    const totalClicks = recentClicks.length + products.reduce((acc, p) => acc + (p.clicks || 0), 0);
-    const verifiedSales = commissionRecords.filter((c) => c.status === 'verified' || c.status === 'paid').length;
+    const datedClicks = allRecentClicks.filter((c) => isInDateRange(c.createdAt));
+    const totalClicks = datedClicks.length;
 
-    const pendingCommissions = commissionRecords
+    const datedCommissions = allCommissionRecords.filter((c) => isInDateRange(c.createdAt));
+    const verifiedSales = datedCommissions.filter((c) => c.status === 'verified' || c.status === 'paid').length;
+
+    const pendingCommissions = datedCommissions
       .filter((c) => c.status === 'pending')
       .reduce((acc, c) => acc + c.commissionAmount, 0);
 
-    const approvedCommissions = commissionRecords
+    const approvedCommissions = datedCommissions
       .filter((c) => c.status === 'verified' || c.status === 'paid')
       .reduce((acc, c) => acc + c.commissionAmount, 0);
 
-    const totalWithdrawalsAmount = allWithdrawals.reduce((acc, w) => acc + w.amount, 0);
+    const datedWithdrawals = allWithdrawals.filter((w) => isInDateRange(w.createdAt));
+    const totalWithdrawalsAmount = datedWithdrawals.reduce((acc, w) => acc + w.amount, 0);
     const actualPlatformRevenue = financialReport.actualPlatformNetRevenue;
 
     return {
@@ -179,7 +197,20 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
       totalWithdrawalsAmount,
       actualPlatformRevenue
     };
-  }, [users, products, externalProducts, recentClicks, commissionRecords, allWithdrawals, financialReport]);
+  }, [users, allProducts, externalProducts, allRecentClicks, allCommissionRecords, allWithdrawals, financialReport, isInDateRange]);
+
+  // Real 7-day click chart buckets derived from database clicks
+  const dailyClickBuckets = useMemo(() => {
+    const days: { label: string; count: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000);
+      const dayKey = d.toISOString().split('T')[0];
+      const label = i === 0 ? 'Today' : d.toLocaleDateString(undefined, { weekday: 'short' });
+      const count = allRecentClicks.filter((c) => (c.createdAt || '').startsWith(dayKey)).length;
+      days.push({ label, count });
+    }
+    return days;
+  }, [allRecentClicks]);
 
   // Filtered Users
   const filteredUsers = useMemo(() => {
@@ -199,9 +230,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     });
   }, [users, userSearch, userRoleFilter]);
 
-  // Filtered Products
+  // Filtered Products (uses allProducts so Pending/Rejected/Approved are all visible)
   const filteredProducts = useMemo(() => {
-    return products.filter((p) => {
+    return allProducts.filter((p) => {
       const matchSearch =
         p.title?.toLowerCase().includes(productSearch.toLowerCase()) ||
         p.category?.toLowerCase().includes(productSearch.toLowerCase()) ||
@@ -210,7 +241,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
       if (!matchSearch) return false;
 
       if (productStatusFilter === 'pending') return p.approvalStatus === 'pending' || p.status === 'draft';
-      if (productStatusFilter === 'approved') return p.approvalStatus === 'approved' || p.status === 'published';
+      if (productStatusFilter === 'approved') return p.approvalStatus === 'approved' && p.status === 'published';
       if (productStatusFilter === 'rejected') return p.approvalStatus === 'rejected';
       if (productStatusFilter === 'featured') return Boolean(p.isFeatured);
 
@@ -224,7 +255,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
       return true;
     });
-  }, [products, productSearch, productStatusFilter, productSourceFilter]);
+  }, [allProducts, productSearch, productStatusFilter, productSourceFilter]);
 
   // Filtered Withdrawals
   const filteredWithdrawals = useMemo(() => {
@@ -311,22 +342,22 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
           <div className="pt-2 space-y-3">
             <button
-              onClick={() => onNavigate('login')}
+              onClick={() => onNavigate('admin-login')}
               className="w-full py-3 rounded-xl bg-gradient-to-r from-red-600 via-pink-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white text-xs font-bold shadow-lg shadow-pink-600/30 cursor-pointer transition-all"
             >
-              Sign In as Super Admin (gnetam108@gmail.com)
-            </button>
-            <button
-              onClick={() => onNavigate('dashboard')}
-              className="w-full py-2.5 rounded-xl bg-[#1d1245] hover:bg-[#28185f] text-slate-200 hover:text-white border border-purple-800 text-xs font-semibold cursor-pointer transition-colors"
-            >
-              Go to Affiliate &amp; Seller Dashboard
+              Sign In on Private Admin Portal
             </button>
             <button
               onClick={() => onNavigate('marketplace')}
-              className="w-full py-2.5 rounded-xl bg-transparent hover:bg-white/5 text-slate-400 hover:text-white text-xs font-semibold cursor-pointer transition-colors"
+              className="w-full py-2.5 rounded-xl bg-[#1d1245] hover:bg-[#28185f] text-slate-200 hover:text-white border border-purple-800 text-xs font-semibold cursor-pointer transition-colors"
             >
               Return to Marketplace
+            </button>
+            <button
+              onClick={() => onNavigate('home')}
+              className="w-full py-2.5 rounded-xl bg-transparent hover:bg-white/5 text-slate-400 hover:text-white text-xs font-semibold cursor-pointer transition-colors"
+            >
+              Back to Homepage
             </button>
           </div>
 
@@ -352,15 +383,15 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
           </button>
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-pink-500 animate-pulse" />
-            <span className="font-extrabold text-sm tracking-tight text-white">ClickBarry Admin</span>
+            <span className="font-extrabold text-sm tracking-tight text-white">AdminCore</span>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => onNavigate('dashboard')}
-            className="text-xs px-2.5 py-1 rounded-full bg-purple-900/70 text-pink-300 font-semibold border border-purple-700/60"
+            onClick={() => onNavigate('marketplace')}
+            className="text-xs px-2.5 py-1 rounded-full bg-purple-900/70 text-pink-300 font-semibold border border-purple-700/60 cursor-pointer"
           >
-            Seller View
+            Marketplace
           </button>
         </div>
       </div>
@@ -472,11 +503,11 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
             <span>Open Marketplace</span>
           </button>
           <button
-            onClick={() => onNavigate('dashboard')}
+            onClick={() => onNavigate('home')}
             className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold text-pink-300 hover:text-white bg-pink-950/40 hover:bg-pink-900/40 border border-pink-800/60 transition-all cursor-pointer"
           >
-            <UserCheck className="w-3.5 h-3.5" />
-            <span>Switch to Seller Dashboard</span>
+            <LayoutDashboard className="w-3.5 h-3.5" />
+            <span>Public Homepage</span>
           </button>
         </div>
       </aside>
@@ -504,8 +535,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
           <div className="flex items-center flex-wrap gap-2">
             {/* Date Range Selector */}
-            <div className="flex items-center bg-[#150c38] border border-purple-800/80 rounded-xl p-1 text-xs">
-              {(['today', '7d', '30d', 'this_month', 'this_year', 'all'] as const).map((p) => (
+            <div className="flex items-center flex-wrap bg-[#150c38] border border-purple-800/80 rounded-xl p-1 text-xs gap-0.5">
+              {(['today', '7d', '30d', 'this_month', 'this_year', 'custom', 'all'] as const).map((p) => (
                 <button
                   key={p}
                   onClick={() => setDateFilter(p)}
@@ -519,11 +550,32 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                   {p === '7d' && '7 Days'}
                   {p === '30d' && '30 Days'}
                   {p === 'this_month' && 'This Month'}
-                  {p === 'this_year' && 'Year'}
+                  {p === 'this_year' && 'This Year'}
+                  {p === 'custom' && 'Custom Date'}
                   {p === 'all' && 'All Time'}
                 </button>
               ))}
             </div>
+
+            {dateFilter === 'custom' && (
+              <div className="flex items-center gap-1.5 bg-[#150c38] border border-purple-800 rounded-xl px-2.5 py-1 text-xs">
+                <input
+                  type="date"
+                  value={customDateRange.startDate}
+                  onChange={(e) => setCustomDateRange({ ...customDateRange, startDate: e.target.value })}
+                  className="bg-transparent text-white text-xs outline-none"
+                  aria-label="Start date"
+                />
+                <span className="text-slate-500">to</span>
+                <input
+                  type="date"
+                  value={customDateRange.endDate}
+                  onChange={(e) => setCustomDateRange({ ...customDateRange, endDate: e.target.value })}
+                  className="bg-transparent text-white text-xs outline-none"
+                  aria-label="End date"
+                />
+              </div>
+            )}
 
             {/* Refresh Data */}
             <button
@@ -577,244 +629,227 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                 </div>
               </div>
 
-              {/* 12 Modern KPI Cards */}
+              {/* 12 Real-Data Overview KPI Cards */}
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                {/* 1. Total Registered Users */}
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Total Users</span>
+                    <span className="text-xs font-semibold">Total Registered Users</span>
                     <Users className="w-4 h-4 text-purple-400" />
                   </div>
-                  <div className="text-2xl font-black text-white">{stats.totalUsers}</div>
-                  <div className="text-[11px] text-emerald-400 mt-1 flex items-center gap-1 font-medium">
-                    <TrendingUp className="w-3 h-3" />
-                    <span>{stats.activeUsers} Active Accounts</span>
-                  </div>
+                  <div className="text-2xl font-black text-white tabular-nums">{stats.totalUsers}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">All roles combined</div>
                 </div>
 
-                {/* 2. Total Sellers */}
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
                     <span className="text-xs font-semibold">Total Sellers</span>
                     <UserCheck className="w-4 h-4 text-pink-400" />
                   </div>
-                  <div className="text-2xl font-black text-white">{stats.totalSellers}</div>
-                  <div className="text-[11px] text-pink-300 mt-1 font-medium">
-                    ₹999 Lifetime Seller Pass
-                  </div>
+                  <div className="text-2xl font-black text-white tabular-nums">{stats.totalSellers}</div>
+                  <div className="text-[11px] text-pink-300 mt-1 font-medium">Registered creators</div>
                 </div>
 
-                {/* 3. Total Affiliates */}
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
                     <span className="text-xs font-semibold">Total Affiliates</span>
                     <Sparkles className="w-4 h-4 text-indigo-400" />
                   </div>
-                  <div className="text-2xl font-black text-white">{stats.totalAffiliates}</div>
-                  <div className="text-[11px] text-indigo-300 mt-1 font-medium">
-                    Promoting Multi-Networks
-                  </div>
+                  <div className="text-2xl font-black text-white tabular-nums">{stats.totalAffiliates}</div>
+                  <div className="text-[11px] text-indigo-300 mt-1 font-medium">Free affiliate accounts</div>
                 </div>
 
-                {/* 4. Listed Products */}
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Listed Products</span>
-                    <ShoppingBag className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-semibold">Active Users</span>
+                    <TrendingUp className="w-4 h-4 text-emerald-400" />
                   </div>
-                  <div className="text-2xl font-black text-white">{stats.totalListed}</div>
-                  <div className="text-[11px] text-amber-300 mt-1 font-medium">
-                    {stats.pendingProducts} Pending Moderation
-                  </div>
+                  <div className="text-2xl font-black text-emerald-400 tabular-nums">{stats.activeUsers}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">Good standing accounts</div>
                 </div>
 
-                {/* 5. Total Link Clicks */}
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Total Listed Products</span>
+                    <ShoppingBag className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <div className="text-2xl font-black text-white tabular-nums">{stats.totalListed}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">Database product records</div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-amber-500/40 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Pending Approvals</span>
+                    <AlertTriangle className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div className="text-2xl font-black text-amber-400 tabular-nums">{stats.pendingProducts}</div>
+                  <div className="text-[11px] text-amber-300 mt-1 font-medium">Awaiting moderation</div>
+                </div>
+
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
                     <span className="text-xs font-semibold">Total Link Clicks</span>
                     <ArrowUpRight className="w-4 h-4 text-cyan-400" />
                   </div>
-                  <div className="text-2xl font-black text-white">{stats.totalClicks}</div>
-                  <div className="text-[11px] text-cyan-300 mt-1 font-medium">
-                    Verified Outbound Visits
-                  </div>
+                  <div className="text-2xl font-black text-white tabular-nums">{stats.totalClicks}</div>
+                  <div className="text-[11px] text-cyan-300 mt-1 font-medium">Real recorded clicks</div>
                 </div>
 
-                {/* 6. Verified Sales */}
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
                     <span className="text-xs font-semibold">Verified Sales</span>
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                   </div>
-                  <div className="text-2xl font-black text-emerald-400">{stats.verifiedSales}</div>
-                  <div className="text-[11px] text-slate-400 mt-1 font-medium">
-                    Confirmed Orders
-                  </div>
+                  <div className="text-2xl font-black text-emerald-400 tabular-nums">{stats.verifiedSales}</div>
+                  <div className="text-[11px] text-slate-400 mt-1 font-medium">Confirmed conversions</div>
                 </div>
 
-                {/* 7. Approved Commissions */}
-                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
-                  <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Approved Commissions</span>
-                    <DollarSign className="w-4 h-4 text-amber-400" />
-                  </div>
-                  <div className="text-2xl font-black text-amber-400">₹{stats.approvedCommissions.toLocaleString()}</div>
-                  <div className="text-[11px] text-slate-400 mt-1 font-medium">
-                    Earned by Affiliates
-                  </div>
-                </div>
-
-                {/* 8. Pending Commissions */}
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
                     <span className="text-xs font-semibold">Pending Commissions</span>
                     <AlertCircle className="w-4 h-4 text-yellow-400" />
                   </div>
-                  <div className="text-2xl font-black text-yellow-300">₹{stats.pendingCommissions.toLocaleString()}</div>
-                  <div className="text-[11px] text-slate-400 mt-1 font-medium">
-                    Under Sales Verification
+                  <div className="text-2xl font-black text-yellow-300 tabular-nums">
+                    ₹{stats.pendingCommissions.toLocaleString()}
                   </div>
+                  <div className="text-[11px] text-slate-400 mt-1 font-medium">Under verification</div>
                 </div>
 
-                {/* 9. Total Affiliate Withdrawals */}
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Withdrawals Requested</span>
+                    <span className="text-xs font-semibold">Approved Commissions</span>
+                    <DollarSign className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div className="text-2xl font-black text-amber-400 tabular-nums">
+                    ₹{stats.approvedCommissions.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1 font-medium">Verified affiliate earnings</div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Affiliate Withdrawals</span>
                     <Wallet className="w-4 h-4 text-purple-400" />
                   </div>
-                  <div className="text-2xl font-black text-white">₹{stats.totalWithdrawalsAmount.toLocaleString()}</div>
+                  <div className="text-2xl font-black text-white tabular-nums">
+                    ₹{stats.totalWithdrawalsAmount.toLocaleString()}
+                  </div>
                   <div className="text-[11px] text-purple-300 mt-1 font-medium">
-                    ₹{financialReport.actualAffiliatePayouts.toLocaleString()} Settled (Paid)
+                    ₹{financialReport.actualAffiliatePayouts.toLocaleString()} Paid out
                   </div>
                 </div>
 
-                {/* 10. Actual Platform Net Revenue (Hero Card) */}
-                <div className="col-span-2 sm:col-span-3 lg:col-span-3 p-5 rounded-2xl bg-gradient-to-r from-pink-900/60 via-purple-900/40 to-[#190d3d] border border-pink-500/50 shadow-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-2 text-pink-300 text-xs font-bold uppercase tracking-wider mb-1">
-                      <DollarSign className="w-4 h-4 text-pink-400" />
-                      <span>Actual ClickBarry Platform Revenue</span>
-                    </div>
-                    <div className="text-3xl font-black text-white">
-                      ₹{stats.actualPlatformRevenue.toLocaleString()}
-                    </div>
-                    <p className="text-xs text-slate-300 mt-1">
-                      Direct Seller Subscription Passes (₹999 each) + Platform Processing. Segregated from Affiliate funds.
-                    </p>
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-pink-900/60 via-purple-900/40 to-[#190d3d] border border-pink-500/50 shadow-xl">
+                  <div className="flex items-center justify-between text-pink-300 mb-2">
+                    <span className="text-xs font-bold">Actual Platform Revenue</span>
+                    <DollarSign className="w-4 h-4 text-pink-400" />
                   </div>
-                  <div className="flex sm:flex-col gap-2 shrink-0">
-                    <button
-                      onClick={() => setActiveSection('financials')}
-                      className="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-bold text-xs shadow-lg transition-all cursor-pointer"
-                    >
-                      View Financial Audit
-                    </button>
-                    <button
-                      onClick={() => setActiveSection('withdrawals')}
-                      className="px-4 py-2 rounded-xl bg-purple-900/80 hover:bg-purple-800 text-pink-200 font-bold text-xs border border-purple-700/60 transition-all cursor-pointer"
-                    >
-                      Process Pending Payouts
-                    </button>
+                  <div className="text-2xl font-black text-white tabular-nums">
+                    ₹{stats.actualPlatformRevenue.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-pink-200 mt-1 font-medium">
+                    Seller passes &amp; verified fees
                   </div>
                 </div>
               </div>
 
-              {/* VISUAL CHARTS ROW (Interactive Responsive SVG Graphs) */}
+              {/* VISUAL CHARTS ROW (Real Data Driven) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Chart 1: Daily Link Clicks & Conversions */}
+                {/* Chart 1: 7-Day Real Link Clicks */}
                 <div className="p-5 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-xl">
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <h4 className="font-extrabold text-sm text-white flex items-center gap-2">
                         <TrendingUp className="w-4 h-4 text-cyan-400" />
-                        <span>Daily Clicks & Traffic Discovery</span>
+                        <span>7-Day Tracked Affiliate Clicks</span>
                       </h4>
-                      <p className="text-xs text-slate-400">Outbound visitor clicks to products across networks</p>
+                      <p className="text-xs text-slate-400">Real click activity logged over the past 7 days</p>
                     </div>
-                    <span className="text-xs font-bold text-cyan-400 bg-cyan-950/40 border border-cyan-800/60 px-2.5 py-1 rounded-lg">
-                      +28.4% Trend
+                    <span className="text-xs font-bold text-cyan-300 bg-cyan-950/40 border border-cyan-800/60 px-2.5 py-1 rounded-lg tabular-nums">
+                      {allRecentClicks.length} Total Clicks
                     </span>
                   </div>
 
-                  {/* Responsive SVG Curve Chart */}
-                  <div className="h-44 w-full relative flex items-end pt-4">
-                    <svg className="w-full h-full overflow-visible" viewBox="0 0 500 120" preserveAspectRatio="none">
-                      <defs>
-                        <linearGradient id="clickGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.4" />
-                          <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.0" />
-                        </linearGradient>
-                      </defs>
-                      {/* Area Fill */}
-                      <path
-                        d="M 0,100 L 0,80 Q 80,40 160,65 T 320,30 T 420,50 T 500,20 L 500,120 L 0,120 Z"
-                        fill="url(#clickGrad)"
-                      />
-                      {/* Curve Stroke */}
-                      <path
-                        d="M 0,80 Q 80,40 160,65 T 320,30 T 420,50 T 500,20"
-                        fill="none"
-                        stroke="#06b6d4"
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                      />
-                      {/* Points */}
-                      <circle cx="160" cy="65" r="4" fill="#06b6d4" className="animate-ping" />
-                      <circle cx="160" cy="65" r="4" fill="#fff" />
-                      <circle cx="320" cy="30" r="4" fill="#fff" />
-                      <circle cx="500" cy="20" r="5" fill="#ec4899" />
-                    </svg>
-                  </div>
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 pt-3 border-t border-purple-900/50 mt-2 font-mono">
-                    <span>Week 1</span>
-                    <span>Week 2</span>
-                    <span>Week 3</span>
-                    <span>Week 4</span>
-                    <span className="text-cyan-400 font-bold">Today</span>
+                  {(() => {
+                    const maxClicks = Math.max(1, ...dailyClickBuckets.map((d) => d.count));
+                    return (
+                      <div className="h-44 w-full flex items-end justify-between gap-2 pt-4 px-2">
+                        {dailyClickBuckets.map((bucket, idx) => {
+                          const heightPct = bucket.count === 0 ? 4 : Math.max(12, Math.round((bucket.count / maxClicks) * 100));
+                          return (
+                            <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
+                              <span className="text-[10px] font-bold text-slate-300 font-mono tabular-nums">
+                                {bucket.count}
+                              </span>
+                              <div
+                                style={{ height: `${heightPct}%` }}
+                                className={`w-full max-w-[32px] rounded-t-lg transition-all duration-500 ${
+                                  bucket.count > 0 ? 'bg-cyan-500 shadow-md shadow-cyan-500/20' : 'bg-purple-900/40'
+                                }`}
+                              />
+                              <span className="text-[10px] text-slate-400 font-mono">{bucket.label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                  <div className="flex items-center justify-between text-xs text-slate-400 pt-3 border-t border-purple-900/50 mt-2">
+                    <span>Source: `affiliate_clicks` table</span>
+                    <span className="text-cyan-400 font-bold">Live DB Sync</span>
                   </div>
                 </div>
 
-                {/* Chart 2: Verified Sales & Affiliate Commission Payouts */}
+                {/* Chart 2: Financial Distribution (Real Data Scaled) */}
                 <div className="p-5 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-xl">
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <h4 className="font-extrabold text-sm text-white flex items-center gap-2">
                         <DollarSign className="w-4 h-4 text-emerald-400" />
-                        <span>Revenue & Affiliate Payout Breakdown</span>
+                        <span>Revenue &amp; Affiliate Payout Breakdown</span>
                       </h4>
-                      <p className="text-xs text-slate-400">Platform subscription fees vs actual affiliate disbursements</p>
+                      <p className="text-xs text-slate-400">Real financial stream totals in current filter window</p>
                     </div>
                     <span className="text-xs font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 px-2.5 py-1 rounded-lg">
-                      100% Reconciled
+                      Double-Entry Ledger
                     </span>
                   </div>
 
-                  {/* Responsive Bar Distribution */}
-                  <div className="h-44 w-full flex items-end justify-between gap-3 pt-4 px-2">
-                    {[
-                      { label: 'Seller Subs', val: 95, color: 'bg-pink-500', text: `₹${financialReport.sellerSubscriptionRevenue.toLocaleString()}` },
-                      { label: 'Approved Comm', val: 70, color: 'bg-emerald-500', text: `₹${financialReport.verifiedSellerCommission.toLocaleString()}` },
-                      { label: 'External Comm', val: 55, color: 'bg-indigo-500', text: `₹${financialReport.externalNetworkCommission.toLocaleString()}` },
-                      { label: 'Payouts (Paid)', val: 65, color: 'bg-purple-500', text: `₹${financialReport.actualAffiliatePayouts.toLocaleString()}` },
-                      { label: 'Pending Payout', val: 30, color: 'bg-amber-500', text: `₹${financialReport.pendingWithdrawalsVolume.toLocaleString()}` }
-                    ].map((bar, i) => (
-                      <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
-                        <span className="text-[10px] font-bold text-slate-300 font-mono truncate max-w-[70px]">
-                          {bar.text}
-                        </span>
-                        <div
-                          style={{ height: `${bar.val}%` }}
-                          className={`w-full max-w-[36px] rounded-t-lg ${bar.color} transition-all duration-500 shadow-md`}
-                        />
-                        <span className="text-[10px] text-slate-400 text-center font-medium truncate max-w-[65px]">
-                          {bar.label}
-                        </span>
+                  {(() => {
+                    const items = [
+                      { label: 'Seller Subs', amount: financialReport.sellerSubscriptionRevenue, color: 'bg-pink-500' },
+                      { label: 'Approved Comm', amount: financialReport.verifiedSellerCommission, color: 'bg-emerald-500' },
+                      { label: 'External Comm', amount: financialReport.externalNetworkCommission, color: 'bg-indigo-500' },
+                      { label: 'Payouts Paid', amount: financialReport.actualAffiliatePayouts, color: 'bg-purple-500' },
+                      { label: 'Pending Payout', amount: financialReport.pendingWithdrawalsVolume, color: 'bg-amber-500' }
+                    ];
+                    const maxAmt = Math.max(1, ...items.map((x) => x.amount));
+                    return (
+                      <div className="h-44 w-full flex items-end justify-between gap-3 pt-4 px-2">
+                        {items.map((bar, i) => {
+                          const heightPct = bar.amount === 0 ? 4 : Math.max(12, Math.round((bar.amount / maxAmt) * 100));
+                          return (
+                            <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
+                              <span className="text-[10px] font-bold text-slate-300 font-mono truncate max-w-[70px]">
+                                ₹{bar.amount.toLocaleString()}
+                              </span>
+                              <div
+                                style={{ height: `${heightPct}%` }}
+                                className={`w-full max-w-[36px] rounded-t-lg transition-all duration-500 ${
+                                  bar.amount > 0 ? `${bar.color} shadow-md` : 'bg-purple-900/40'
+                                }`}
+                              />
+                              <span className="text-[10px] text-slate-400 text-center font-medium truncate max-w-[65px]">
+                                {bar.label}
+                              </span>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })()}
                   <div className="pt-3 border-t border-purple-900/50 mt-2 flex items-center justify-between text-xs text-slate-400">
-                    <span>Reconciliation: Double-Entry Immutable Ledger</span>
-                    <span className="text-emerald-400 font-bold">Zero Discrepancy</span>
+                    <span>Reconciliation: Verified Payout &amp; Commission Ledger</span>
+                    <span className="text-emerald-400 font-bold">Real DB Records</span>
                   </div>
                 </div>
               </div>
@@ -830,14 +865,14 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     </h4>
                     <button
                       onClick={() => setActiveSection('products')}
-                      className="text-xs text-pink-400 hover:text-pink-300 font-bold flex items-center gap-1"
+                      className="text-xs text-pink-400 hover:text-pink-300 font-bold flex items-center gap-1 cursor-pointer"
                     >
-                      <span>Manage All ({products.length})</span>
+                      <span>Manage All ({allProducts.length})</span>
                       <ChevronRight className="w-3.5 h-3.5" />
                     </button>
                   </div>
 
-                  {products.filter((p) => p.approvalStatus === 'pending' || p.status === 'draft').length === 0 ? (
+                  {allProducts.filter((p) => p.approvalStatus === 'pending' || p.status === 'draft').length === 0 ? (
                     <div className="p-8 text-center rounded-xl bg-purple-950/20 border border-purple-900/40">
                       <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
                       <p className="text-xs font-bold text-white">All products are currently reviewed!</p>
@@ -845,7 +880,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      {products
+                      {allProducts
                         .filter((p) => p.approvalStatus === 'pending' || p.status === 'draft')
                         .slice(0, 4)
                         .map((prod) => (
@@ -855,7 +890,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                           >
                             <div className="flex items-center gap-3">
                               <img
-                                src={prod.image || 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?auto=format&fit=crop&w=200&q=80'}
+                                src={prod.image || defaultProductCover}
                                 alt={prod.title}
                                 className="w-10 h-10 rounded-lg object-cover bg-purple-950 border border-purple-800 shrink-0"
                               />
@@ -1144,7 +1179,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                 {users
                   .filter((u) => u.role === 'seller' || u.role === 'both')
                   .map((seller) => {
-                    const sellerProds = products.filter((p) => p.sellerId === seller.id || p.sellerName?.toLowerCase() === seller.fullName?.toLowerCase());
+                    const sellerProds = allProducts.filter((p) => p.sellerId === seller.id || p.sellerName?.toLowerCase() === seller.fullName?.toLowerCase());
                     return (
                       <div
                         key={seller.id}
@@ -1214,7 +1249,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                       <span>PayU Lifetime Seller Membership Payments (₹999 INR)</span>
                     </h4>
                     <p className="text-xs text-slate-400">
-                      Real-time payment records from PayU Hosted Checkout. Verified server hash activates lifetime access.
+                      PayU Checkout Gateway: <strong>{isPaymentGatewayEnabled ? 'Live Server Verification Active' : 'Pending Server Integration (Disabled)'}</strong>
                     </p>
                   </div>
                   <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-3 py-1 rounded-full font-bold">
@@ -1232,7 +1267,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                         <th className="py-3 px-4">PayU ID (Mihpayid)</th>
                         <th className="py-3 px-4">Payment Mode</th>
                         <th className="py-3 px-4">Payment Status</th>
-                        <th className="py-3 px-4">Hash Verified</th>
+                        <th className="py-3 px-4">Verification</th>
                         <th className="py-3 px-4">Payment Date</th>
                         <th className="py-3 px-4 text-right">Membership</th>
                       </tr>
@@ -1279,9 +1314,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                               </span>
                             </td>
                             <td className="py-3 px-4">
-                              <span className="text-[11px] font-semibold text-emerald-400 flex items-center gap-1">
+                              <span className={`text-[11px] font-semibold flex items-center gap-1 ${p.status === 'success' ? 'text-emerald-400' : 'text-amber-300'}`}>
                                 <CheckCircle2 className="w-3.5 h-3.5" />
-                                <span>Verified</span>
+                                <span>{p.status === 'success' ? 'Verified' : 'Unverified'}</span>
                               </span>
                             </td>
                             <td className="py-3 px-4 text-slate-400 text-[11px]">
@@ -1320,7 +1355,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                 </div>
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60">
                   <span className="text-xs text-slate-400">Generated Links</span>
-                  <div className="text-xl font-bold text-indigo-400 mt-1">{affiliateLinks.length}</div>
+                  <div className="text-xl font-bold text-indigo-400 mt-1">{allAffiliateLinks.length}</div>
                 </div>
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60">
                   <span className="text-xs text-slate-400">Approved Commissions</span>
@@ -1347,7 +1382,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                 {users
                   .filter((u) => u.role === 'affiliate' || u.role === 'both')
                   .map((aff) => {
-                    const links = affiliateLinks.filter((l) => l.affiliateId === aff.id);
+                    const links = allAffiliateLinks.filter((l) => l.affiliateId === aff.id);
                     const clicks = links.reduce((acc, l) => acc + (l.clicksCount || 0), 0);
                     return (
                       <div
@@ -1495,7 +1530,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                             <td className="py-3.5 px-4">
                               <div className="flex items-center gap-3">
                                 <img
-                                  src={p.image || 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?auto=format&fit=crop&w=150&q=80'}
+                                  src={p.image || defaultProductCover}
                                   alt={p.title}
                                   className="w-10 h-10 rounded-lg object-cover bg-purple-950 border border-purple-800 shrink-0"
                                 />
@@ -1504,7 +1539,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                                     {p.title}
                                   </span>
                                   <span className="text-[10px] text-slate-400 block truncate max-w-[180px]">
-                                    by {p.sellerName || 'Verified Seller'}
+                                    by {p.sellerName || 'Seller'}
                                   </span>
                                 </div>
                               </div>
@@ -1528,14 +1563,14 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                             <td className="py-3.5 px-4">
                               <span
                                 className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                                  p.approvalStatus === 'approved' || p.status === 'published'
+                                  p.approvalStatus === 'approved' && p.status === 'published'
                                     ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                                     : p.approvalStatus === 'rejected'
                                     ? 'bg-red-500/20 text-red-300 border border-red-500/30'
                                     : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                 }`}
                               >
-                                {p.approvalStatus === 'approved' || p.status === 'published' ? 'APPROVED' : p.approvalStatus === 'rejected' ? 'REJECTED' : 'PENDING'}
+                                {p.approvalStatus === 'approved' && p.status === 'published' ? 'APPROVED' : p.approvalStatus === 'rejected' ? 'REJECTED' : 'PENDING'}
                               </span>
                             </td>
                             <td className="py-3.5 px-4">
@@ -1551,7 +1586,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                             </td>
                             <td className="py-3.5 px-4 text-right">
                               <div className="flex items-center justify-end gap-1.5">
-                                {p.approvalStatus !== 'approved' && p.status !== 'published' && (
+                                {p.approvalStatus !== 'approved' && (
                                   <button
                                     onClick={() => approveProduct(p.id)}
                                     className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] cursor-pointer"
@@ -1566,13 +1601,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                                   Reject
                                 </button>
                                 <button
-                                  onClick={() => {
-                                    if (confirm(`Are you sure you want to delete or prohibit "${p.title}"?`)) {
-                                      deleteProductAdmin(p.id, 'Removed by admin during moderation review');
-                                    }
-                                  }}
+                                  onClick={() => setDeleteProductTarget(p)}
                                   className="p-1.5 rounded-lg bg-red-950/80 text-red-400 hover:bg-red-900 border border-red-800 cursor-pointer"
-                                  title="Delete Prohibited Listing"
+                                  title="Delete Listing"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -1863,7 +1894,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
               {/* Categories Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {categories.map((cat) => {
-                  const count = products.filter((p) => p.category?.toLowerCase() === cat.slug.toLowerCase()).length;
+                  const count = allProducts.filter((p) => p.category?.toLowerCase() === cat.slug.toLowerCase()).length;
                   return (
                     <div
                       key={cat.id}
@@ -1888,12 +1919,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => {
-                              if (confirm(`Remove category "${cat.name}"?`)) {
-                                deleteCategory(cat.id);
-                              }
-                            }}
-                            className="p-1.5 rounded-lg bg-red-950/80 text-red-400 hover:bg-red-900"
+                            onClick={() => setDeleteCategoryTarget(cat)}
+                            className="p-1.5 rounded-lg bg-red-950/80 text-red-400 hover:bg-red-900 cursor-pointer"
                             title="Delete Category"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -2407,6 +2434,64 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                 className="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-bold text-xs"
               >
                 Save Category
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. Confirm Delete Product Modal */}
+      {deleteProductTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl bg-[#140b33] border border-red-800/80 p-6 shadow-2xl space-y-4">
+            <h3 className="font-extrabold text-base text-white">Delete Product Listing</h3>
+            <p className="text-xs text-slate-300">
+              Confirm permanent deletion of <strong>&ldquo;{deleteProductTarget.title}&rdquo;</strong> from the catalog?
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setDeleteProductTarget(null)}
+                className="px-4 py-2 rounded-xl bg-purple-950 text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  await deleteProductAdmin(deleteProductTarget.id, 'Removed by admin during moderation review');
+                  setDeleteProductTarget(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs cursor-pointer"
+              >
+                Confirm Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. Confirm Delete Category Modal */}
+      {deleteCategoryTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl bg-[#140b33] border border-red-800/80 p-6 shadow-2xl space-y-4">
+            <h3 className="font-extrabold text-base text-white">Remove Category</h3>
+            <p className="text-xs text-slate-300">
+              Remove category <strong>&ldquo;{deleteCategoryTarget.name}&rdquo;</strong>?
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setDeleteCategoryTarget(null)}
+                className="px-4 py-2 rounded-xl bg-purple-950 text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  await deleteCategory(deleteCategoryTarget.id);
+                  setDeleteCategoryTarget(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs cursor-pointer"
+              >
+                Remove Category
               </button>
             </div>
           </div>

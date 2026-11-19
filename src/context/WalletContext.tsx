@@ -4,8 +4,7 @@ import {
   WithdrawalRequest,
   WalletLedgerEntry,
   PayoutSettings,
-  WalletNotification,
-  WithdrawalStatus
+  WalletNotification
 } from '../types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
@@ -30,7 +29,6 @@ export interface AdminUpdatePayoutInput {
 }
 
 interface WalletContextType {
-  // Wallet info for authenticated affiliate
   wallet: AffiliateWallet;
   myWithdrawals: WithdrawalRequest[];
   ledgerEntries: WalletLedgerEntry[];
@@ -38,22 +36,12 @@ interface WalletContextType {
   unreadNotificationCount: number;
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
-
-  // Withdrawal action
   submitWithdrawalRequest: (input: SubmitWithdrawalInput) => Promise<{ success: boolean; request?: WithdrawalRequest; error?: string }>;
-
-  // Payout Settings
   settings: PayoutSettings;
   updateSettings: (newSettings: Partial<PayoutSettings>) => Promise<{ success: boolean; error?: string }>;
-
-  // Admin Payout Management
   allWithdrawals: WithdrawalRequest[];
   adminUpdatePayout: (input: AdminUpdatePayoutInput) => Promise<{ success: boolean; error?: string }>;
-
-  // Manual Ledger Credit (e.g. when a sale commission is approved)
   creditApprovedCommission: (affiliateId: string, amount: number, orderRef: string) => Promise<{ success: boolean; error?: string }>;
-
-  // Loading & refresh
   isLoading: boolean;
   refreshWalletData: () => Promise<void>;
 }
@@ -62,56 +50,30 @@ const DEFAULT_SETTINGS: PayoutSettings = {
   minWithdrawalAmount: 500,
   maxWithdrawalAmount: 100000,
   allowedPaymentMethods: ['upi', 'bank_transfer'],
-  processingInfo: 'Withdrawals are processed manually by Admin via UPI or NEFT/IMPS every Tuesday within 24-48 business hours.',
+  processingInfo: 'Withdrawals are processed manually by Admin via UPI or NEFT/IMPS within 24-48 business hours.',
   isWithdrawalsEnabled: true
 };
-
-const LOCAL_WALLET_PREFIX = 'cb_wallet_';
-const LOCAL_WITHDRAWALS_KEY = 'cb_withdrawals_all_v1';
-const LOCAL_LEDGER_KEY = 'cb_ledger_all_v1';
-const LOCAL_SETTINGS_KEY = 'cb_payout_settings_v1';
-const LOCAL_NOTIFS_KEY = 'cb_wallet_notifications_v1';
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
 export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
 
-  const [settings, setSettings] = useState<PayoutSettings>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_SETTINGS_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return DEFAULT_SETTINGS;
-  });
-
-  const [allWithdrawals, setAllWithdrawals] = useState<WithdrawalRequest[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_WITHDRAWALS_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return [];
-  });
-
-  const [ledgerEntries, setLedgerEntries] = useState<WalletLedgerEntry[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_LEDGER_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return [];
-  });
-
-  const [notifications, setNotifications] = useState<WalletNotification[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_NOTIFS_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return [];
-  });
-
+  const [settings, setSettings] = useState<PayoutSettings>(DEFAULT_SETTINGS);
+  const [allWithdrawals, setAllWithdrawals] = useState<WithdrawalRequest[]>([]);
+  const [ledgerEntries, setLedgerEntries] = useState<WalletLedgerEntry[]>([]);
+  const [notifications, setNotifications] = useState<WalletNotification[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Derive wallet balance from ledger & withdrawals for accuracy (Ledger authoritative)
+  // Reset wallet state when user signs out
+  useEffect(() => {
+    if (!user) {
+      setAllWithdrawals([]);
+      setLedgerEntries([]);
+      setNotifications([]);
+    }
+  }, [user]);
+
   const wallet: AffiliateWallet = useMemo(() => {
     if (!user) {
       return {
@@ -126,26 +88,21 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       };
     }
 
-    // Filter user's ledger entries
     const userLedger = ledgerEntries.filter((e) => e.affiliateId === user.id);
 
-    // Sum approved earnings (credits)
     const approvedCredits = userLedger
       .filter((e) => e.entryType === 'commission_approved' || (e.entryType === 'admin_adjustment' && e.amount > 0))
       .reduce((sum, e) => sum + e.amount, 0);
 
-    // Sum pending commissions
     const pendingCredits = userLedger
       .filter((e) => e.entryType === 'commission_pending')
       .reduce((sum, e) => sum + e.amount, 0);
 
-    // Calculate active reserved balance from user's pending/approved/processing withdrawal requests
     const userWithdrawals = allWithdrawals.filter((w) => w.affiliateId === user.id);
     const reserved = userWithdrawals
       .filter((w) => w.status === 'pending' || w.status === 'approved' || w.status === 'processing')
       .reduce((sum, w) => sum + w.amount, 0);
 
-    // Sum actually paid withdrawals
     const totalPaid = userWithdrawals
       .filter((w) => w.status === 'paid')
       .reduce((sum, w) => sum + w.amount, 0);
@@ -159,114 +116,97 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       reservedBalance: reserved,
       availableBalance: available,
       totalWithdrawn: totalPaid,
-      totalPaid: totalPaid,
+      totalPaid,
       lastUpdatedAt: new Date().toISOString()
     };
   }, [user, ledgerEntries, allWithdrawals]);
 
-  // Affiliate's personal withdrawals
   const myWithdrawals = useMemo(() => {
     if (!user) return [];
     return allWithdrawals.filter((w) => w.affiliateId === user.id);
   }, [user, allWithdrawals]);
 
-  // Sync to local storage
-  const syncWithdrawals = (newList: WithdrawalRequest[]) => {
-    setAllWithdrawals(newList);
-    try {
-      localStorage.setItem(LOCAL_WITHDRAWALS_KEY, JSON.stringify(newList));
-    } catch {}
-  };
-
-  const syncLedger = (newList: WalletLedgerEntry[]) => {
-    setLedgerEntries(newList);
-    try {
-      localStorage.setItem(LOCAL_LEDGER_KEY, JSON.stringify(newList));
-    } catch {}
-  };
-
-  const syncNotifications = (newList: WalletNotification[]) => {
-    setNotifications(newList);
-    try {
-      localStorage.setItem(LOCAL_NOTIFS_KEY, JSON.stringify(newList));
-    } catch {}
-  };
-
-  // Fetch from Supabase if tables exist
   const refreshWalletData = useCallback(async () => {
     if (!supabase || !user) return;
     setIsLoading(true);
 
     try {
-      // 1. Fetch settings
       const { data: setRes } = await supabase.from('payout_settings').select('*').limit(1).maybeSingle();
       if (setRes) {
         setSettings({
           minWithdrawalAmount: Number(setRes.min_withdrawal_amount) || 500,
           maxWithdrawalAmount: Number(setRes.max_withdrawal_amount) || 100000,
           allowedPaymentMethods: setRes.allowed_payment_methods || ['upi', 'bank_transfer'],
-          processingInfo: setRes.processing_info,
+          processingInfo: setRes.processing_info || DEFAULT_SETTINGS.processingInfo,
           isWithdrawalsEnabled: Boolean(setRes.is_withdrawals_enabled)
         });
       }
 
-      // 2. Fetch withdrawal requests
-      const { data: wdrRes } = await supabase
-        .from('withdrawal_requests')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const wdrQuery = isAdmin
+        ? supabase.from('withdrawal_requests').select('*').order('created_at', { ascending: false })
+        : supabase
+            .from('withdrawal_requests')
+            .select('*')
+            .eq('affiliate_id', user.id)
+            .order('created_at', { ascending: false });
 
-      if (wdrRes) {
-        const mappedWdr: WithdrawalRequest[] = wdrRes.map((r: any) => ({
-          id: r.id,
-          requestNumber: r.request_number,
-          affiliateId: r.affiliate_id,
-          amount: Number(r.amount),
-          paymentMethod: r.payment_method,
-          upiId: r.upi_id,
-          accountHolderName: r.account_holder_name,
-          bankAccountNumber: r.bank_account_number,
-          ifscCode: r.ifsc_code,
-          bankName: r.bank_name,
-          status: r.status,
-          adminRemarks: r.admin_remarks,
-          rejectionReason: r.rejection_reason,
-          transactionReference: r.transaction_reference,
-          paymentProofUrl: r.payment_proof_url,
-          processedBy: r.processed_by,
-          processedAt: r.processed_at,
-          createdAt: r.created_at,
-          updatedAt: r.updated_at
-        }));
-        syncWithdrawals(mappedWdr);
+      const ledQuery = isAdmin
+        ? supabase.from('wallet_ledger').select('*').order('created_at', { ascending: false })
+        : supabase
+            .from('wallet_ledger')
+            .select('*')
+            .eq('affiliate_id', user.id)
+            .order('created_at', { ascending: false });
+
+      const [wdrRes, ledRes] = await Promise.all([wdrQuery, ledQuery]);
+
+      if (wdrRes.data && !wdrRes.error) {
+        setAllWithdrawals(
+          wdrRes.data.map((r: any) => ({
+            id: r.id,
+            requestNumber: r.request_number,
+            affiliateId: r.affiliate_id,
+            amount: Number(r.amount),
+            paymentMethod: r.payment_method,
+            upiId: r.upi_id,
+            accountHolderName: r.account_holder_name,
+            bankAccountNumber: r.bank_account_number,
+            ifscCode: r.ifsc_code,
+            bankName: r.bank_name,
+            status: r.status,
+            adminRemarks: r.admin_remarks,
+            rejectionReason: r.rejection_reason,
+            transactionReference: r.transaction_reference,
+            paymentProofUrl: r.payment_proof_url,
+            processedBy: r.processed_by,
+            processedAt: r.processed_at,
+            createdAt: r.created_at,
+            updatedAt: r.updated_at
+          }))
+        );
       }
 
-      // 3. Fetch wallet ledger
-      const { data: ledRes } = await supabase
-        .from('wallet_ledger')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (ledRes) {
-        const mappedLed: WalletLedgerEntry[] = ledRes.map((r: any) => ({
-          id: r.id,
-          affiliateId: r.affiliate_id,
-          entryType: r.entry_type,
-          amount: Number(r.amount),
-          balanceAfter: Number(r.balance_after),
-          referenceType: r.reference_type,
-          referenceId: r.reference_id,
-          description: r.description,
-          createdAt: r.created_at
-        }));
-        syncLedger(mappedLed);
+      if (ledRes.data && !ledRes.error) {
+        setLedgerEntries(
+          ledRes.data.map((r: any) => ({
+            id: r.id,
+            affiliateId: r.affiliate_id,
+            entryType: r.entry_type,
+            amount: Number(r.amount),
+            balanceAfter: Number(r.balance_after),
+            referenceType: r.reference_type,
+            referenceId: r.reference_id,
+            description: r.description,
+            createdAt: r.created_at
+          }))
+        );
       }
     } catch (err) {
-      console.warn('Wallet data sync note (using local ledger):', err);
+      console.warn('Wallet data sync note:', err);
     } finally {
       setIsLoading(false);
     }
-  }, [user]);
+  }, [user, isAdmin]);
 
   useEffect(() => {
     if (user) {
@@ -274,13 +214,14 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [user, refreshWalletData]);
 
-  // Credit approved commission from confirmed sales
   const creditApprovedCommission = async (
     affiliateId: string,
     amount: number,
     orderRef: string
   ): Promise<{ success: boolean; error?: string }> => {
+    if (!isAdmin) return { success: false, error: 'Only Admin can credit approved commissions.' };
     if (amount <= 0) return { success: false, error: 'Amount must be positive' };
+    if (!supabase) return { success: false, error: 'Database unavailable' };
 
     const newLedgerEntry: WalletLedgerEntry = {
       id: `led-${Date.now()}`,
@@ -294,25 +235,25 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       createdAt: new Date().toISOString()
     };
 
-    if (supabase) {
-      try {
-        await supabase.from('wallet_ledger').insert({
-          affiliate_id: affiliateId,
-          entry_type: 'commission_approved',
-          amount,
-          balance_after: newLedgerEntry.balanceAfter,
-          reference_type: 'commission_record',
-          reference_id: orderRef,
-          description: newLedgerEntry.description
-        });
-      } catch {}
+    try {
+      const { error } = await supabase.from('wallet_ledger').insert({
+        affiliate_id: affiliateId,
+        entry_type: 'commission_approved',
+        amount,
+        balance_after: newLedgerEntry.balanceAfter,
+        reference_type: 'commission_record',
+        reference_id: orderRef,
+        description: newLedgerEntry.description
+      });
+      if (error) return { success: false, error: error.message };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to credit commission' };
     }
 
-    syncLedger([newLedgerEntry, ...ledgerEntries]);
+    setLedgerEntries((prev) => [newLedgerEntry, ...prev]);
     return { success: true };
   };
 
-  // SUBMIT WITHDRAWAL REQUEST (Affiliate action)
   const submitWithdrawalRequest = async (
     input: SubmitWithdrawalInput
   ): Promise<{ success: boolean; request?: WithdrawalRequest; error?: string }> => {
@@ -321,7 +262,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
 
     if (!settings.isWithdrawalsEnabled) {
-      return { success: false, error: 'Withdrawals are currently paused for maintenance by Admin.' };
+      return { success: false, error: 'Withdrawals are currently paused by Admin.' };
     }
 
     const amt = Number(input.amount);
@@ -340,29 +281,29 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (amt > wallet.availableBalance) {
       return {
         success: false,
-        error: `Insufficient available balance! You have ₹${wallet.availableBalance} available. (Pending or reserved funds cannot be withdrawn).`
+        error: `Insufficient available balance. You have ₹${wallet.availableBalance} available.`
       };
     }
 
-    // Validate payment method details
     if (input.paymentMethod === 'upi') {
       const upi = input.upiId?.trim();
       if (!upi || !upi.includes('@')) {
-        return { success: false, error: 'Please enter a valid UPI ID (e.g., yourname@okhdfcbank or 9876543210@paytm).' };
+        return { success: false, error: 'Please enter a valid UPI ID (e.g., name@okhdfcbank).' };
       }
     } else if (input.paymentMethod === 'bank_transfer') {
-      if (!input.accountHolderName?.trim()) {
-        return { success: false, error: 'Please enter Account Holder Name.' };
-      }
+      if (!input.accountHolderName?.trim()) return { success: false, error: 'Please enter Account Holder Name.' };
       if (!input.bankAccountNumber?.trim() || input.bankAccountNumber.trim().length < 8) {
         return { success: false, error: 'Please enter a valid Bank Account Number.' };
       }
       if (!input.ifscCode?.trim() || input.ifscCode.trim().length < 9) {
-        return { success: false, error: 'Please enter a valid 11-digit IFSC Code.' };
+        return { success: false, error: 'Please enter a valid IFSC Code.' };
       }
     }
 
+    if (!supabase) return { success: false, error: 'Database unavailable' };
+
     const reqNumber = `WDR-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
+    const nowIso = new Date().toISOString();
 
     const newRequest: WithdrawalRequest = {
       id: `wdr-${Date.now()}`,
@@ -378,40 +319,26 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ifscCode: input.paymentMethod === 'bank_transfer' ? input.ifscCode?.trim().toUpperCase() : undefined,
       bankName: input.bankName?.trim() || undefined,
       status: 'pending',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      createdAt: nowIso,
+      updatedAt: nowIso
     };
 
-    // Ledger accounting: Reserve the requested funds
     const ledgerEntry: WalletLedgerEntry = {
       id: `led-${Date.now()}`,
       affiliateId: user.id,
       entryType: 'withdrawal_reserved',
       amount: amt,
-      balanceAfter: wallet.availableBalance - amt,
+      balanceAfter: Math.max(0, wallet.availableBalance - amt),
       referenceType: 'withdrawal_request',
       referenceId: reqNumber,
       description: `Funds reserved for Withdrawal Request #${reqNumber} (${input.paymentMethod.toUpperCase()})`,
-      createdAt: new Date().toISOString()
+      createdAt: nowIso
     };
 
-    // Notification for affiliate
-    const notif: WalletNotification = {
-      id: `notif-${Date.now()}`,
-      affiliateId: user.id,
-      requestId: newRequest.id,
-      requestNumber: reqNumber,
-      title: 'Withdrawal Request Submitted',
-      message: `Your request for ₹${amt} via ${input.paymentMethod.toUpperCase()} has been submitted. Funds are reserved pending Admin review.`,
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-      read: false
-    };
-
-    // Supabase insert if available
-    if (supabase) {
-      try {
-        await supabase.from('withdrawal_requests').insert({
+    try {
+      const { data: insertedReq, error: wdrErr } = await supabase
+        .from('withdrawal_requests')
+        .insert({
           request_number: reqNumber,
           affiliate_id: user.id,
           amount: amt,
@@ -422,45 +349,45 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           ifsc_code: newRequest.ifscCode,
           bank_name: newRequest.bankName,
           status: 'pending'
-        });
+        })
+        .select()
+        .single();
 
-        await supabase.from('wallet_ledger').insert({
-          affiliate_id: user.id,
-          entry_type: 'withdrawal_reserved',
-          amount: amt,
-          balance_after: ledgerEntry.balanceAfter,
-          reference_type: 'withdrawal_request',
-          reference_id: reqNumber,
-          description: ledgerEntry.description
-        });
-      } catch (err) {
-        console.warn('Supabase withdrawal save note:', err);
-      }
+      if (wdrErr) return { success: false, error: wdrErr.message };
+      if (insertedReq) newRequest.id = insertedReq.id;
+
+      await supabase.from('wallet_ledger').insert({
+        affiliate_id: user.id,
+        entry_type: 'withdrawal_reserved',
+        amount: amt,
+        balance_after: ledgerEntry.balanceAfter,
+        reference_type: 'withdrawal_request',
+        reference_id: reqNumber,
+        description: ledgerEntry.description
+      });
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to submit withdrawal request' };
     }
 
-    syncWithdrawals([newRequest, ...allWithdrawals]);
-    syncLedger([ledgerEntry, ...ledgerEntries]);
-    syncNotifications([notif, ...notifications]);
-
+    setAllWithdrawals((prev) => [newRequest, ...prev]);
+    setLedgerEntries((prev) => [ledgerEntry, ...prev]);
     return { success: true, request: newRequest };
   };
 
-  // ADMIN UPDATE PAYOUT (Admin action)
   const adminUpdatePayout = async (
     input: AdminUpdatePayoutInput
   ): Promise<{ success: boolean; error?: string }> => {
-    const target = allWithdrawals.find((w) => w.id === input.requestId);
-    if (!target) {
-      return { success: false, error: 'Withdrawal request not found.' };
-    }
+    if (!isAdmin) return { success: false, error: 'Unauthorized: Admin privileges required.' };
 
-    // Prevent duplicate payouts
+    const target = allWithdrawals.find((w) => w.id === input.requestId);
+    if (!target) return { success: false, error: 'Withdrawal request not found.' };
+
     if (target.status === 'paid') {
-      return { success: false, error: 'This request has already been marked as Paid. Duplicate payouts are strictly prohibited.' };
+      return { success: false, error: 'This request has already been marked as Paid.' };
     }
 
     if (input.status === 'paid' && !input.transactionReference?.trim()) {
-      return { success: false, error: 'Transaction Reference (UPI Ref ID or Bank UTR number) is required to mark request as Paid.' };
+      return { success: false, error: 'Transaction Reference (UPI Ref ID or Bank UTR) is required.' };
     }
 
     const oldStatus = target.status;
@@ -479,28 +406,19 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
 
     let ledgerDelta: WalletLedgerEntry | null = null;
-    let notifTitle = '';
-    let notifMsg = '';
-
-    // Ledger accounting rules:
     if (input.status === 'paid') {
-      // Final settlement: Fund deduction from wallet
       ledgerDelta = {
         id: `led-${Date.now()}`,
         affiliateId: target.affiliateId,
         entryType: 'withdrawal_paid',
         amount: target.amount,
-        balanceAfter: wallet.availableBalance, // already reserved, so available balance remains accurate
+        balanceAfter: wallet.availableBalance,
         referenceType: 'withdrawal_request',
         referenceId: target.requestNumber,
-        description: `Withdrawal Paid: Ref ${input.transactionReference || 'N/A'}. Deducted from reserved balance.`,
+        description: `Withdrawal Paid: Ref ${input.transactionReference || 'N/A'}.`,
         createdAt: nowIso
       };
-
-      notifTitle = 'Withdrawal Payment Completed! 🎉';
-      notifMsg = `₹${target.amount} has been paid via ${target.paymentMethod.toUpperCase()}. UTR / Ref: ${input.transactionReference}.`;
     } else if (input.status === 'rejected' && oldStatus !== 'rejected') {
-      // Release reserved funds back to available balance
       ledgerDelta = {
         id: `led-${Date.now()}`,
         affiliateId: target.affiliateId,
@@ -509,24 +427,14 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         balanceAfter: wallet.availableBalance + target.amount,
         referenceType: 'withdrawal_request',
         referenceId: target.requestNumber,
-        description: `Withdrawal Rejected: Funds released back to available balance. Reason: ${input.rejectionReason || 'Declined by Admin'}`,
+        description: `Withdrawal Rejected: Funds released. Reason: ${input.rejectionReason || 'Declined by Admin'}`,
         createdAt: nowIso
       };
-
-      notifTitle = 'Withdrawal Request Rejected';
-      notifMsg = `Your request #${target.requestNumber} for ₹${target.amount} was rejected. Funds have been returned to your wallet. Reason: ${input.rejectionReason || 'Please contact support'}`;
-    } else if (input.status === 'approved') {
-      notifTitle = 'Withdrawal Request Approved';
-      notifMsg = `Your request #${target.requestNumber} for ₹${target.amount} is approved and scheduled for payout.`;
-    } else if (input.status === 'processing') {
-      notifTitle = 'Payment In Processing';
-      notifMsg = `Admin is actively processing payout #${target.requestNumber} via ${target.paymentMethod.toUpperCase()}. UTR will be updated shortly.`;
     }
 
-    // Save to Supabase
     if (supabase) {
       try {
-        await supabase
+        const { error } = await supabase
           .from('withdrawal_requests')
           .update({
             status: input.status,
@@ -540,6 +448,8 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           })
           .eq('id', target.id);
 
+        if (error) return { success: false, error: error.message };
+
         if (ledgerDelta) {
           await supabase.from('wallet_ledger').insert({
             affiliate_id: target.affiliateId,
@@ -551,48 +461,22 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             description: ledgerDelta.description
           });
         }
-      } catch (err) {
-        console.warn('Supabase admin payout update note:', err);
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Failed to update payout' };
       }
     }
 
-    // Update local state
-    const nextWithdrawals = allWithdrawals.map((w) => (w.id === target.id ? updatedRequest : w));
-    syncWithdrawals(nextWithdrawals);
-
-    if (ledgerDelta) {
-      syncLedger([ledgerDelta, ...ledgerEntries]);
-    }
-
-    if (notifTitle) {
-      const newNotif: WalletNotification = {
-        id: `notif-${Date.now()}`,
-        affiliateId: target.affiliateId,
-        requestId: target.id,
-        requestNumber: target.requestNumber,
-        title: notifTitle,
-        message: notifMsg,
-        status: input.status,
-        adminRemarks: input.adminRemarks,
-        transactionReference: input.transactionReference,
-        createdAt: nowIso,
-        read: false
-      };
-      syncNotifications([newNotif, ...notifications]);
-    }
-
+    setAllWithdrawals((prev) => prev.map((w) => (w.id === target.id ? updatedRequest : w)));
+    if (ledgerDelta) setLedgerEntries((prev) => [ledgerDelta!, ...prev]);
     return { success: true };
   };
 
-  // UPDATE SETTINGS (Admin action)
   const updateSettings = async (
     newSettings: Partial<PayoutSettings>
   ): Promise<{ success: boolean; error?: string }> => {
+    if (!isAdmin) return { success: false, error: 'Unauthorized: Admin only.' };
     const merged: PayoutSettings = { ...settings, ...newSettings };
     setSettings(merged);
-    try {
-      localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify(merged));
-    } catch {}
 
     if (supabase) {
       try {
@@ -611,15 +495,12 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return { success: true };
   };
 
-  // Notification helpers
   const markNotificationRead = (id: string) => {
-    const updated = notifications.map((n) => (n.id === id ? { ...n, read: true } : n));
-    syncNotifications(updated);
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
   };
 
   const markAllNotificationsRead = () => {
-    const updated = notifications.map((n) => ({ ...n, read: true }));
-    syncNotifications(updated);
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   };
 
   const unreadNotificationCount = useMemo(() => {

@@ -1,33 +1,45 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
+import { UserRole } from '../types';
 
-export interface SellerProfile {
+export const PRIMARY_SUPER_ADMIN_EMAIL = 'gnetam108@gmail.com';
+
+export interface UserProfile {
   id: string;
   email: string;
   full_name?: string;
-  role?: string;
+  role: UserRole;
+  status: 'active' | 'suspended';
   seller_verified?: boolean;
   subscription_status?: 'active' | 'none' | 'pending';
   subscription_price?: number;
   created_at?: string;
 }
 
+export type SellerProfile = UserProfile;
+
 interface AuthContextType {
   user: User | null;
   session: Session | null;
-  profile: SellerProfile | null;
+  profile: UserProfile | null;
+  role: UserRole | null;
+  isAdmin: boolean;
+  isAffiliate: boolean;
+  isSeller: boolean;
   isLoading: boolean;
   isPasswordRecovery: boolean;
+  refreshProfile: () => Promise<UserProfile | null>;
   signUp: (
     email: string,
     password: string,
-    fullName: string
-  ) => Promise<{ success: boolean; needsEmailVerification: boolean; message: string; error?: string }>;
+    fullName: string,
+    role?: 'affiliate' | 'seller'
+  ) => Promise<{ success: boolean; needsEmailVerification: boolean; message: string; role?: UserRole; error?: string }>;
   signIn: (
     email: string,
     password: string
-  ) => Promise<{ success: boolean; message: string; error?: string; code?: string }>;
+  ) => Promise<{ success: boolean; message: string; role?: UserRole; error?: string; code?: string }>;
   signOut: () => Promise<void>;
   resetPasswordForEmail: (
     email: string
@@ -43,56 +55,151 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const normalizeRole = (email: string | undefined, dbRole?: string | null, metaRole?: string | null): UserRole => {
+  if (email && email.toLowerCase().trim() === PRIMARY_SUPER_ADMIN_EMAIL.toLowerCase()) {
+    return 'admin';
+  }
+  const candidate = (dbRole || metaRole || 'affiliate').toLowerCase().trim();
+  if (candidate === 'admin' || candidate === 'super_admin') {
+    // Only trust dbRole === 'admin' if DB says admin; never escalate from mutable client metadata
+    return dbRole === 'admin' || dbRole === 'super_admin' ? 'admin' : 'affiliate';
+  }
+  if (candidate === 'seller' || candidate === 'both') return 'seller';
+  return 'affiliate';
+};
+
+const clearUserSessionCaches = () => {
+  if (typeof window === 'undefined') return;
+  const keysToClear = [
+    'cb_hybrid_affiliate_links_v1',
+    'cb_hybrid_external_products_v1',
+    'cb_hybrid_affiliate_clicks_v1',
+    'cb_hybrid_commissions_v1',
+    'cb_withdrawals_all_v1',
+    'cb_ledger_all_v1',
+    'cb_wallet_notifications_v1',
+    'cb_payu_membership_payments_v1',
+    'cb_admin_users_v2'
+  ];
+  keysToClear.forEach((k) => {
+    try {
+      localStorage.removeItem(k);
+    } catch {}
+  });
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [profile, setProfile] = useState<SellerProfile | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(false);
 
   // Fetch or construct profile safely
-  const fetchProfile = useCallback(async (currentUser: User) => {
+  const fetchProfile = useCallback(async (currentUser: User): Promise<UserProfile | null> => {
+    const email = currentUser.email?.toLowerCase().trim() || '';
+    const fallbackRole = normalizeRole(email, null, currentUser.user_metadata?.role);
+
     if (!supabase) {
-      setProfile({
+      const built: UserProfile = {
         id: currentUser.id,
-        email: currentUser.email || '',
-        full_name: currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Seller'
-      });
-      return;
+        email,
+        full_name: currentUser.user_metadata?.full_name || email.split('@')[0] || 'Member',
+        role: fallbackRole,
+        status: 'active',
+        seller_verified: false,
+        subscription_status: 'none',
+        created_at: currentUser.created_at
+      };
+      setProfile(built);
+      return built;
     }
 
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .select('*')
+        .select('id, email, full_name, role, status, seller_verified, subscription_status, subscription_price, created_at')
         .eq('id', currentUser.id)
         .maybeSingle();
 
       if (data && !error) {
-        setProfile({
+        const resolvedRole = normalizeRole(data.email || email, data.role, currentUser.user_metadata?.role);
+        const resolvedStatus: 'active' | 'suspended' = data.status === 'suspended' ? 'suspended' : 'active';
+
+        // Block suspended accounts immediately
+        if (resolvedStatus === 'suspended' && resolvedRole !== 'admin') {
+          await supabase.auth.signOut();
+          setUser(null);
+          setSession(null);
+          setProfile(null);
+          clearUserSessionCaches();
+          return null;
+        }
+
+        const built: UserProfile = {
           id: data.id,
-          email: data.email || currentUser.email || '',
-          full_name: data.full_name || currentUser.user_metadata?.full_name,
+          email: data.email || email,
+          full_name: data.full_name || currentUser.user_metadata?.full_name || email.split('@')[0],
+          role: resolvedRole,
+          status: resolvedStatus,
+          seller_verified: Boolean(data.seller_verified),
+          subscription_status: (data.subscription_status as UserProfile['subscription_status']) || 'none',
+          subscription_price: data.subscription_price ? Number(data.subscription_price) : 999,
           created_at: data.created_at || currentUser.created_at
-        });
+        };
+        setProfile(built);
+        return built;
       } else {
-        // Fallback to metadata if profiles table not created or row not populated yet
-        setProfile({
+        // Profile row might not exist yet if trigger wasn't installed; safely create for affiliate/seller
+        const safeRole: 'affiliate' | 'seller' | 'admin' =
+          email === PRIMARY_SUPER_ADMIN_EMAIL.toLowerCase()
+            ? 'admin'
+            : currentUser.user_metadata?.role === 'seller'
+            ? 'seller'
+            : 'affiliate';
+
+        try {
+          await supabase.from('profiles').upsert({
+            id: currentUser.id,
+            email,
+            full_name: currentUser.user_metadata?.full_name || email.split('@')[0] || 'Member',
+            role: safeRole
+          });
+        } catch {}
+
+        const built: UserProfile = {
           id: currentUser.id,
-          email: currentUser.email || '',
-          full_name: currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Seller',
+          email,
+          full_name: currentUser.user_metadata?.full_name || email.split('@')[0] || 'Member',
+          role: safeRole,
+          status: 'active',
+          seller_verified: false,
+          subscription_status: 'none',
           created_at: currentUser.created_at
-        });
+        };
+        setProfile(built);
+        return built;
       }
-    } catch (e) {
-      setProfile({
+    } catch {
+      const built: UserProfile = {
         id: currentUser.id,
-        email: currentUser.email || '',
-        full_name: currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Seller',
+        email,
+        full_name: currentUser.user_metadata?.full_name || email.split('@')[0] || 'Member',
+        role: fallbackRole,
+        status: 'active',
+        seller_verified: false,
+        subscription_status: 'none',
         created_at: currentUser.created_at
-      });
+      };
+      setProfile(built);
+      return built;
     }
   }, []);
+
+  const refreshProfile = useCallback(async (): Promise<UserProfile | null> => {
+    if (!user) return null;
+    return await fetchProfile(user);
+  }, [user, fetchProfile]);
 
   // Listen to Supabase Auth state changes
   useEffect(() => {
@@ -110,48 +217,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // 1. Initial active session check
-    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
-      setSession(currentSession);
-      setUser(currentSession?.user ?? null);
-      if (currentSession?.user) {
-        fetchProfile(currentSession.user);
+    supabase.auth
+      .getSession()
+      .then(async ({ data: { session: currentSession } }) => {
+        setSession(currentSession);
+        setUser(currentSession?.user ?? null);
+        if (currentSession?.user) {
+          await fetchProfile(currentSession.user);
+        }
+        setIsLoading(false);
+      })
+      .catch(() => {
+        setIsLoading(false);
+      });
+
+    // 2. Real-time subscription to auth state changes
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
+
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
       }
-      setIsLoading(false);
-    }).catch(() => {
+
+      if (newSession?.user) {
+        await fetchProfile(newSession.user);
+      } else {
+        setProfile(null);
+      }
+
       setIsLoading(false);
     });
-
-    // 2. Real-time subscription to auth state changes (login, logout, token refresh, password recovery)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, newSession) => {
-        setSession(newSession);
-        setUser(newSession?.user ?? null);
-
-        if (event === 'PASSWORD_RECOVERY') {
-          setIsPasswordRecovery(true);
-        }
-
-        if (newSession?.user) {
-          await fetchProfile(newSession.user);
-        } else {
-          setProfile(null);
-        }
-
-        setIsLoading(false);
-      }
-    );
 
     return () => {
       subscription.unsubscribe();
     };
   }, [fetchProfile]);
 
-  // Real Supabase signUp
+  // Role-aware Supabase signUp (strictly affiliate or seller; admin cannot be self-assigned)
   const signUp = async (
     email: string,
     password: string,
-    fullName: string
-  ): Promise<{ success: boolean; needsEmailVerification: boolean; message: string; error?: string }> => {
+    fullName: string,
+    requestedRole: 'affiliate' | 'seller' = 'affiliate'
+  ): Promise<{ success: boolean; needsEmailVerification: boolean; message: string; role?: UserRole; error?: string }> => {
     if (!supabase) {
       return {
         success: false,
@@ -164,13 +275,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const cleanEmail = email.trim().toLowerCase();
       const cleanName = fullName.trim();
+      const safeRole: 'affiliate' | 'seller' = requestedRole === 'seller' ? 'seller' : 'affiliate';
+      const roleLabel = safeRole === 'seller' ? 'Seller' : 'Affiliate';
 
       const { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
         password,
         options: {
           data: {
-            full_name: cleanName
+            full_name: cleanName,
+            role: safeRole
           },
           emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
         }
@@ -189,7 +303,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Supabase anti-enumeration: If email is already registered and unconfirmed, identities array is empty
       if (data.user && data.user.identities && data.user.identities.length === 0) {
         return {
           success: false,
@@ -199,35 +312,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Check if user was created and if session is active or requires email confirmation
       const registeredUser = data.user;
       const hasActiveSession = Boolean(data.session);
 
-      // Also ensure profile in profiles table exists if user was created and table is ready
       if (registeredUser && hasActiveSession) {
         try {
           await supabase.from('profiles').upsert({
             id: registeredUser.id,
             email: cleanEmail,
-            full_name: cleanName
+            full_name: cleanName,
+            role: cleanEmail === PRIMARY_SUPER_ADMIN_EMAIL.toLowerCase() ? 'admin' : safeRole
           });
-        } catch {
-          // Trigger may have handled it or table pending
-        }
+        } catch {}
+        await fetchProfile(registeredUser);
       }
 
       if (!hasActiveSession && registeredUser) {
         return {
           success: true,
           needsEmailVerification: true,
-          message: `Verification link sent to ${cleanEmail}. Please check your inbox or spam folder to activate your Seller account!`
+          role: safeRole,
+          message: `Verification link sent to ${cleanEmail}. Please check your inbox or spam folder to activate your free ${roleLabel} account!`
         };
       }
 
       return {
         success: true,
         needsEmailVerification: false,
-        message: `Welcome to ClickBarry, ${cleanName}! Your Seller account is ready.`
+        role: cleanEmail === PRIMARY_SUPER_ADMIN_EMAIL.toLowerCase() ? 'admin' : safeRole,
+        message: `Welcome to ClickBarry, ${cleanName}! Your ${roleLabel} account is ready.`
       };
     } catch (err: any) {
       return {
@@ -239,11 +352,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Real Supabase signInWithPassword
+  // Real Supabase signInWithPassword with suspended account blocking & role return
   const signIn = async (
     email: string,
     password: string
-  ): Promise<{ success: boolean; message: string; error?: string; code?: string }> => {
+  ): Promise<{ success: boolean; message: string; role?: UserRole; error?: string; code?: string }> => {
     if (!supabase) {
       return {
         success: false,
@@ -269,11 +382,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data.user) {
-        await fetchProfile(data.user);
+        const loadedProfile = await fetchProfile(data.user);
+        if (!loadedProfile) {
+          return {
+            success: false,
+            message: 'Your account has been suspended by an administrator. Please contact ClickBarry support.',
+            error: 'Account suspended',
+            code: 'account_suspended'
+          };
+        }
+
+        return {
+          success: true,
+          role: loadedProfile.role,
+          message: 'Logged in successfully!'
+        };
       }
 
       return {
         success: true,
+        role: 'affiliate',
         message: 'Logged in successfully!'
       };
     } catch (err: any) {
@@ -285,14 +413,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Real Supabase signOut
+  // Real Supabase signOut + cache cleanup
   const signOut = async (): Promise<void> => {
+    clearUserSessionCaches();
+    setUser(null);
+    setSession(null);
+    setProfile(null);
     if (!supabase) return;
     try {
       await supabase.auth.signOut();
-      setUser(null);
-      setSession(null);
-      setProfile(null);
     } catch (e) {
       console.warn('Sign out error:', e);
     }
@@ -365,7 +494,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       setIsPasswordRecovery(false);
-      // Clean hash from window
       if (typeof window !== 'undefined' && window.location.hash) {
         window.history.replaceState(null, '', window.location.pathname);
       }
@@ -383,7 +511,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Resend verification email
   const resendVerificationEmail = async (
     email: string
   ): Promise<{ success: boolean; message: string; error?: string }> => {
@@ -417,14 +544,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const resolvedRole: UserRole | null = user
+    ? profile?.role || normalizeRole(user.email, null, user.user_metadata?.role)
+    : null;
+
+  const isAdmin = resolvedRole === 'admin';
+  const isSeller = resolvedRole === 'seller';
+  const isAffiliate = resolvedRole === 'affiliate';
+
   return (
     <AuthContext.Provider
       value={{
         user,
         session,
         profile,
+        role: resolvedRole,
+        isAdmin,
+        isAffiliate,
+        isSeller,
         isLoading,
         isPasswordRecovery,
+        refreshProfile,
         signUp,
         signIn,
         signOut,

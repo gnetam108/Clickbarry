@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StrawberryLogo } from './StrawberryLogo';
 import { useAuth } from '../context/AuthContext';
+import { UserRole } from '../types';
 import {
   X,
   User,
@@ -15,20 +16,21 @@ import {
   KeyRound,
   Eye,
   EyeOff,
-  HelpCircle,
-  ExternalLink
+  TrendingUp
 } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
   initialMode: 'login' | 'signup' | 'forgot' | 'reset';
+  defaultRole?: 'affiliate' | 'seller';
   onClose: () => void;
-  onSuccess: (email: string) => void;
+  onSuccess: (email: string, role?: UserRole) => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
   initialMode,
+  defaultRole = 'affiliate',
   onClose,
   onSuccess
 }) => {
@@ -45,39 +47,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [mode, setMode] = useState<'login' | 'signup' | 'forgot' | 'reset'>(
     isPasswordRecovery ? 'reset' : initialMode
   );
+  const [selectedRole, setSelectedRole] = useState<'affiliate' | 'seller'>(defaultRole);
 
-  // Form Fields
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
-  // Status & Feedback
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [needsVerification, setNeedsVerification] = useState(false);
   const [resendingEmail, setResendingEmail] = useState(false);
 
-  // Sync mode when initialMode or password recovery state changes
   useEffect(() => {
     if (isPasswordRecovery) {
       setMode('reset');
     } else {
       setMode(initialMode);
     }
+    setSelectedRole(defaultRole);
     setErrorMessage('');
     setSuccessMessage('');
     setNeedsVerification(false);
-  }, [initialMode, isPasswordRecovery, isOpen]);
+  }, [initialMode, defaultRole, isPasswordRecovery, isOpen]);
 
   if (!isOpen) return null;
 
-  // Validation functions
-  const isValidEmail = (val: string) => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim());
-  };
+  const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim());
 
   const handleModeChange = (newMode: 'login' | 'signup' | 'forgot' | 'reset') => {
     setMode(newMode);
@@ -91,7 +89,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMessage('');
     setSuccessMessage('');
 
-    // --- 1. SIGNUP VALIDATION & CALL ---
     if (mode === 'signup') {
       if (!fullName.trim()) {
         setErrorMessage('Please enter your full name.');
@@ -111,7 +108,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
 
       setLoading(true);
-      const res = await signUp(email, password, fullName);
+      const res = await signUp(email, password, fullName, selectedRole);
       setLoading(false);
 
       if (!res.success) {
@@ -125,14 +122,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       } else {
         setSuccessMessage(res.message);
         setTimeout(() => {
-          onSuccess(email);
+          onSuccess(email, res.role || selectedRole);
           onClose();
-        }, 1500);
+        }, 1200);
       }
       return;
     }
 
-    // --- 2. LOGIN VALIDATION & CALL ---
     if (mode === 'login') {
       if (!isValidEmail(email)) {
         setErrorMessage('Please enter a valid email address.');
@@ -157,35 +153,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      setSuccessMessage('Logged in successfully! Redirecting to Seller Dashboard...');
+      setSuccessMessage('Logged in successfully! Redirecting...');
       setTimeout(() => {
-        onSuccess(email);
+        onSuccess(email, res.role);
         onClose();
-      }, 1000);
+      }, 800);
       return;
     }
 
-    // --- 3. FORGOT PASSWORD ---
     if (mode === 'forgot') {
       if (!isValidEmail(email)) {
         setErrorMessage('Please enter a valid email address.');
         return;
       }
-
       setLoading(true);
       const res = await resetPasswordForEmail(email);
       setLoading(false);
-
       if (!res.success) {
         setErrorMessage(res.message || 'Failed to send password reset email.');
         return;
       }
-
       setSuccessMessage(res.message);
       return;
     }
 
-    // --- 4. RESET PASSWORD (NEW PASSWORD CONFIRMATION) ---
     if (mode === 'reset') {
       if (password.length < 6) {
         setErrorMessage('Password must be at least 6 characters long.');
@@ -195,22 +186,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setErrorMessage('Passwords do not match.');
         return;
       }
-
       setLoading(true);
       const res = await updatePassword(password);
       setLoading(false);
-
       if (!res.success) {
         setErrorMessage(res.message || 'Failed to update password.');
         return;
       }
-
       setSuccessMessage(res.message);
       clearPasswordRecovery();
       setTimeout(() => {
         setMode('login');
         setSuccessMessage('Password changed! You can now log in with your new password.');
-      }, 1800);
+      }, 1500);
     }
   };
 
@@ -233,10 +221,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
       <div className="relative w-full max-w-md max-h-[92vh] overflow-y-auto bg-[#130b30] border border-purple-800/80 rounded-3xl p-6 sm:p-8 shadow-2xl text-slate-100">
-        {/* Glow corner */}
         <div className="absolute -top-12 -right-12 w-32 h-32 bg-pink-600/30 rounded-full blur-2xl pointer-events-none" />
 
-        {/* Close Button */}
         <button
           onClick={onClose}
           className="absolute top-5 right-5 p-1.5 text-slate-400 hover:text-white rounded-full bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
@@ -245,25 +231,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <X className="w-5 h-5" />
         </button>
 
-        {/* Brand Logo & Header */}
-        <div className="text-center space-y-2 mb-6">
+        <div className="text-center space-y-2 mb-5">
           <div className="inline-block">
             <StrawberryLogo size="sm" showTagline={false} />
           </div>
           <h2 className="text-2xl font-black text-white">
-            {mode === 'signup' && 'Create Seller Account'}
-            {mode === 'login' && 'Seller Login'}
+            {mode === 'signup' && `Create ${selectedRole === 'seller' ? 'Seller' : 'Affiliate'} Account`}
+            {mode === 'login' && 'Sign In to ClickBarry'}
             {mode === 'forgot' && 'Reset Your Password'}
             {mode === 'reset' && 'Set New Password'}
           </h2>
           <p className="text-xs text-slate-400">
-            {mode === 'signup' && 'Real Supabase Authentication • Lifetime Seller Access (₹999)'}
-            {mode === 'login' && 'Enter your registered credentials to access your dashboard'}
+            {mode === 'signup' &&
+              (selectedRole === 'affiliate'
+                ? '100% Free Affiliate Registration • Promote & Earn Commissions'
+                : 'Seller Account • List Your Digital Products')}
+            {mode === 'login' && 'Log in to access your Affiliate or Seller Dashboard'}
             {mode === 'forgot' && 'We will send a secure password reset link to your email'}
             {mode === 'reset' && 'Enter your new password below'}
           </p>
 
-          {/* Mode Switch Tabs (Login / Sign Up) */}
           {(mode === 'login' || mode === 'signup') && (
             <div className="flex p-1 rounded-xl bg-[#1b1044] border border-purple-800 mt-3">
               <button
@@ -288,14 +275,54 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
         </div>
 
-        {/* Error Alert */}
+        {/* Role Selector on Sign Up */}
+        {mode === 'signup' && (
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            <button
+              type="button"
+              onClick={() => setSelectedRole('affiliate')}
+              className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                selectedRole === 'affiliate'
+                  ? 'bg-indigo-600/25 border-indigo-400 text-white shadow-md'
+                  : 'bg-[#1b1045] border-purple-900 text-slate-400 hover:text-white'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 font-bold text-xs">
+                <TrendingUp className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Affiliate</span>
+              </div>
+              <span className="text-[10px] text-emerald-400 font-semibold block mt-0.5">
+                100% Free Forever
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSelectedRole('seller')}
+              className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                selectedRole === 'seller'
+                  ? 'bg-pink-600/25 border-pink-400 text-white shadow-md'
+                  : 'bg-[#1b1045] border-purple-900 text-slate-400 hover:text-white'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 font-bold text-xs">
+                <Rocket className="w-3.5 h-3.5 text-pink-400" />
+                <span>Seller</span>
+              </div>
+              <span className="text-[10px] text-pink-300 font-semibold block mt-0.5">
+                Product Creators
+              </span>
+            </button>
+          </div>
+        )}
+
         {errorMessage && (
-          <div className="mb-4 p-3.5 rounded-2xl bg-red-950/80 border border-red-500/70 text-red-200 text-xs font-medium flex items-start gap-2.5 animate-in fade-in">
+          <div className="mb-4 p-3.5 rounded-2xl bg-red-950/80 border border-red-500/70 text-red-200 text-xs font-medium flex items-start gap-2.5">
             <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
             <div className="space-y-1 flex-1">
               <span>{errorMessage}</span>
               {needsVerification && (
-                <div className="pt-1.5 flex flex-wrap items-center gap-2">
+                <div className="pt-1">
                   <button
                     type="button"
                     onClick={handleResendVerification}
@@ -310,30 +337,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         )}
 
-        {/* Success Alert */}
         {successMessage && (
-          <div className="mb-4 p-3.5 rounded-2xl bg-emerald-950/80 border border-emerald-500/70 text-emerald-200 text-xs font-medium flex items-start gap-2.5 animate-in fade-in">
+          <div className="mb-4 p-3.5 rounded-2xl bg-emerald-950/80 border border-emerald-500/70 text-emerald-200 text-xs font-medium flex items-start gap-2.5">
             <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-            <div className="space-y-1 flex-1">
-              <span>{successMessage}</span>
-              {needsVerification && (
-                <div className="pt-2 text-[11px] text-slate-300 bg-emerald-900/40 p-2.5 rounded-xl border border-emerald-700/50 space-y-1">
-                  <span className="font-bold text-emerald-300 block">💡 Testing Tip:</span>
-                  <p>
-                    Check your email inbox or spam folder for the Supabase confirmation link. Alternatively, to allow instant login without clicking email links during testing, you can toggle off <strong>"Confirm email"</strong> in your Supabase Dashboard:
-                  </p>
-                  <p className="font-mono text-[10px] text-slate-300">
-                    Supabase &gt; Authentication &gt; Providers &gt; Email &gt; Confirm email (Toggle OFF)
-                  </p>
-                </div>
-              )}
-            </div>
+            <span>{successMessage}</span>
           </div>
         )}
 
-        {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-3.5">
-          {/* Full Name (Sign Up only) */}
           {mode === 'signup' && (
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -353,7 +364,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {/* Email Address (Sign Up, Login, Forgot) */}
           {mode !== 'reset' && (
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -364,7 +374,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <input
                   type="email"
                   required
-                  placeholder="seller@example.com"
+                  placeholder="name@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-[#1c1145] border border-purple-800 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-pink-500"
@@ -373,7 +383,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {/* Password (Sign Up, Login, Reset) */}
           {mode !== 'forgot' && (
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -408,15 +417,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              {mode === 'signup' && (
-                <span className="text-[10px] text-slate-400 mt-1 block">
-                  Password must be at least 6 characters long.
-                </span>
-              )}
             </div>
           )}
 
-          {/* Confirm Password (Sign Up & Reset only) */}
           {(mode === 'signup' || mode === 'reset') && (
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -436,18 +439,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {/* Seller Trust Banner on Signup */}
-          {mode === 'signup' && (
-            <div className="p-3 rounded-2xl bg-purple-950/60 border border-purple-800 text-xs text-slate-300 flex items-center justify-between">
-              <div className="space-y-0.5">
-                <span className="font-bold text-white block">One-Time Fee: ₹999 Lifetime</span>
-                <span className="text-[11px] text-emerald-400 font-semibold">Protected by 5-Sales Refund Guarantee</span>
-              </div>
-              <ShieldCheck className="w-6 h-6 text-emerald-400 shrink-0" />
-            </div>
-          )}
-
-          {/* Submit Button */}
           <button
             type="submit"
             disabled={loading}
@@ -456,22 +447,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {loading ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Processing with Supabase...</span>
+                <span>Authenticating...</span>
               </>
             ) : mode === 'signup' ? (
               <>
-                <Rocket className="w-4 h-4" />
-                <span>Create Seller Account (₹999 Access)</span>
+                {selectedRole === 'seller' ? <Rocket className="w-4 h-4" /> : <TrendingUp className="w-4 h-4" />}
+                <span>
+                  {selectedRole === 'seller' ? 'Create Seller Account' : 'Create Free Affiliate Account'}
+                </span>
               </>
             ) : mode === 'login' ? (
               <>
-                <span>Sign In to Dashboard</span>
+                <span>Sign In</span>
                 <ArrowRight className="w-4 h-4" />
               </>
             ) : mode === 'forgot' ? (
               <>
                 <KeyRound className="w-4 h-4" />
-                <span>Send Password Reset Link</span>
+                <span>Send Reset Link</span>
               </>
             ) : (
               <>
@@ -481,7 +474,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             )}
           </button>
 
-          {/* Back to Login link on Forgot Password */}
           {mode === 'forgot' && (
             <div className="text-center pt-2">
               <button
@@ -495,11 +487,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
         </form>
 
-        {/* Security and Privacy Notice */}
         <div className="mt-5 pt-4 border-t border-purple-900/60 text-center">
           <p className="text-[11px] text-slate-400 flex items-center justify-center gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span>Secure Supabase Auth with Row Level Security (RLS)</span>
+            <span>Protected by Supabase Role-Based Security</span>
           </p>
         </div>
       </div>

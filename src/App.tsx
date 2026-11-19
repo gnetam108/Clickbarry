@@ -3,9 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { PageId, Product } from './types';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  useLocation,
+  useNavigate,
+  useParams
+} from 'react-router-dom';
+import { PageId, Product, UserRole } from './types';
 import { ProductProvider, useProducts } from './context/ProductContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { HybridAffiliateProvider, useHybridAffiliate } from './context/HybridAffiliateContext';
@@ -16,8 +24,12 @@ import { Header } from './components/Header';
 import { Footer } from './components/Footer';
 import { HomePage } from './pages/HomePage';
 import { MarketplacePage } from './pages/MarketplacePage';
+import { ProductDetailPage } from './pages/ProductDetailPage';
+import { AffiliateDashboardPage } from './pages/AffiliateDashboardPage';
 import { SellerDashboardPage } from './pages/SellerDashboardPage';
 import { AdminDashboardPage } from './pages/AdminDashboardPage';
+import { AdminLoginPage } from './pages/AdminLoginPage';
+import { LoginPage } from './pages/LoginPage';
 import { HowItWorksPage } from './pages/HowItWorksPage';
 import { DirectoryPage } from './pages/DirectoryPage';
 import { GuaranteePage } from './pages/GuaranteePage';
@@ -29,15 +41,25 @@ import { ProductModal } from './components/ProductModal';
 import { AddEditProductModal } from './components/AddEditProductModal';
 import { AuthModal } from './components/AuthModal';
 import { PayUCheckoutModal } from './components/PayUCheckoutModal';
-import { SupabaseDevStatusBar } from './components/SupabaseDevStatusBar';
-import { CheckCircle2, AlertCircle, Info, X, LogOut, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 import { validateSafeUrl } from './lib/tracking';
 
-const PAGE_PATHS: Record<Exclude<PageId, 'login' | 'signup'>, string> = {
+const PAGE_PATHS: Record<PageId, string> = {
   home: '/',
   marketplace: '/marketplace',
+  'product-detail': '/marketplace',
+  affiliate: '/affiliate',
+  'affiliate-auth': '/affiliate/auth',
+  'affiliate-dashboard': '/affiliate/dashboard',
+  seller: '/seller',
+  'seller-auth': '/seller/auth',
+  'seller-dashboard': '/seller/dashboard',
+  login: '/login',
+  signup: '/signup',
+  'admin-login': '/admin-login',
+  admincore: '/admincore',
+  admin: '/admincore',
   dashboard: '/dashboard',
-  admin: '/admin',
   'how-it-works': '/how-it-works',
   directory: '/directory',
   guarantee: '/guarantee',
@@ -47,52 +69,102 @@ const PAGE_PATHS: Record<Exclude<PageId, 'login' | 'signup'>, string> = {
   contact: '/contact'
 };
 
-const PATH_TO_PAGE: Record<string, PageId> = Object.entries(PAGE_PATHS).reduce(
-  (acc, [pageId, path]) => {
-    acc[path] = pageId as PageId;
-    return acc;
-  },
-  {} as Record<string, PageId>
-);
+const PATH_TO_PAGE: Record<string, PageId> = {
+  '/': 'home',
+  '/marketplace': 'marketplace',
+  '/affiliate': 'affiliate',
+  '/affiliate/auth': 'affiliate-auth',
+  '/affiliate/dashboard': 'affiliate-dashboard',
+  '/affiliates': 'affiliates',
+  '/seller': 'seller',
+  '/seller/auth': 'seller-auth',
+  '/seller/dashboard': 'seller-dashboard',
+  '/sellers': 'sellers',
+  '/login': 'login',
+  '/signup': 'signup',
+  '/admin-login': 'admin-login',
+  '/admincore': 'admincore',
+  '/admin': 'admincore',
+  '/dashboard': 'dashboard',
+  '/how-it-works': 'how-it-works',
+  '/directory': 'directory',
+  '/guarantee': 'guarantee',
+  '/about': 'about',
+  '/contact': 'contact'
+};
+
+const ProductDetailRouteWrapper: React.FC<{
+  onNavigate: (page: PageId) => void;
+  onOpenAffiliateSignup: () => void;
+}> = ({ onNavigate, onOpenAffiliateSignup }) => {
+  const { id } = useParams<{ id: string }>();
+  return (
+    <ProductDetailPage
+      productId={id || ''}
+      onNavigate={onNavigate}
+      onOpenAffiliateSignup={onOpenAffiliateSignup}
+    />
+  );
+};
+
+const DashboardRedirect: React.FC = () => {
+  const { user, role, isLoading } = useAuth();
+  if (isLoading) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center bg-[#0c0722]">
+        <div className="w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+  if (role === 'admin') {
+    return <Navigate to="/admincore" replace />;
+  }
+  if (role === 'seller') {
+    return <Navigate to="/seller/dashboard" replace />;
+  }
+  return <Navigate to="/affiliate/dashboard" replace />;
+};
 
 function AppContent() {
-  const { user, profile, signOut, isPasswordRecovery } = useAuth();
-  const { products, addProduct, updateProduct, recordClick, toast, hideToast } = useProducts();
-  const { affiliateLinks, recordOutboundClick } = useHybridAffiliate();
+  const { user, role, isPasswordRecovery } = useAuth();
+  const { refreshProducts, fetchSellerProducts, recordClick, toast, hideToast } = useProducts();
+  const { resolveAndTrackClick } = useHybridAffiliate();
   const location = useLocation();
   const navigate = useNavigate();
 
   const normalizedPath = location.pathname !== '/' ? location.pathname.replace(/\/+$/, '') : '/';
-  const currentPage: PageId = PATH_TO_PAGE[normalizedPath] || 'home';
+  const currentPage: PageId = normalizedPath.startsWith('/product/')
+    ? 'product-detail'
+    : PATH_TO_PAGE[normalizedPath] || 'home';
+
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup' | 'forgot' | 'reset'>('login');
+  const [authDefaultRole, setAuthDefaultRole] = useState<'affiliate' | 'seller'>('affiliate');
 
-  // Handle incoming affiliate tracking link clicks: ?cb_trk=...
+  const trackedSlugRef = useRef<string | null>(null);
+
+  // Public incoming affiliate tracking link clicks: ?cb_trk=...
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const urlParams = new URLSearchParams(window.location.search);
-      const trackingSlug = urlParams.get('cb_trk');
-      if (trackingSlug) {
-        // Find matching affiliate link
-        const matched = affiliateLinks.find((l) => l.uniqueTrackingSlug === trackingSlug);
-        if (matched && matched.targetUrl) {
-          const { isValid, sanitizedUrl } = validateSafeUrl(matched.targetUrl);
-          if (isValid && sanitizedUrl) {
-            recordOutboundClick(
-              trackingSlug,
-              sanitizedUrl,
-              matched.networkName,
-              matched.productId,
-              matched.externalProductId
-            );
-            // Redirect after brief record
-            window.location.href = sanitizedUrl;
-          }
+    if (typeof window === 'undefined') return;
+    const urlParams = new URLSearchParams(window.location.search);
+    const trackingSlug = urlParams.get('cb_trk')?.trim();
+    if (!trackingSlug || trackedSlugRef.current === trackingSlug) return;
+
+    trackedSlugRef.current = trackingSlug;
+
+    resolveAndTrackClick(trackingSlug).then((res) => {
+      if (res.success && res.targetUrl) {
+        const { isValid, sanitizedUrl } = validateSafeUrl(res.targetUrl);
+        if (isValid && sanitizedUrl) {
+          window.location.href = sanitizedUrl;
         }
       }
-    }
-  }, [affiliateLinks, recordOutboundClick]);
+    });
+  }, [location.search, resolveAndTrackClick]);
 
   // Add / Edit Product Modal state
   const [isAddEditModalOpen, setIsAddEditModalOpen] = useState(false);
@@ -106,20 +178,14 @@ function AppContent() {
     }
   }, [isPasswordRecovery]);
 
-  // Scroll to top on page change
   const navigateTo = (page: PageId) => {
-    if (page === 'login') {
-      setAuthModalMode('login');
-      setAuthModalOpen(true);
-      return;
-    }
-    if (page === 'signup') {
-      setAuthModalMode('signup');
-      setAuthModalOpen(true);
-      return;
-    }
     const targetPath = PAGE_PATHS[page] || '/';
     navigate(targetPath);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openProductDetail = (product: Product) => {
+    navigate(`/product/${product.id}`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -128,13 +194,22 @@ function AppContent() {
     setAuthModalOpen(true);
   };
 
-  const handleOpenSignup = () => {
+  const handleOpenSignup = (defaultRole: 'affiliate' | 'seller' = 'affiliate') => {
+    setAuthDefaultRole(defaultRole);
     setAuthModalMode('signup');
     setAuthModalOpen(true);
   };
 
-  const handleAuthSuccess = (email: string) => {
-    navigate(PAGE_PATHS.dashboard);
+  const handleAuthSuccess = (_email: string, resolvedRole?: UserRole) => {
+    const targetRole = resolvedRole || role;
+    if (targetRole === 'admin') {
+      navigate('/admincore');
+    } else if (targetRole === 'seller') {
+      navigate('/seller/dashboard');
+    } else {
+      navigate('/affiliate/dashboard');
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleOpenAddModal = () => {
@@ -147,11 +222,11 @@ function AppContent() {
     setIsAddEditModalOpen(true);
   };
 
-  const handleSaveProduct = (productData: any) => {
-    if (editingProduct) {
-      updateProduct(editingProduct.id, productData);
-    } else {
-      addProduct(productData);
+  // AddEditProductModal handles addProduct/updateProduct internally; sync state here
+  const handleSaveProduct = async () => {
+    await refreshProducts();
+    if (user?.id) {
+      await fetchSellerProducts(user.id);
     }
   };
 
@@ -161,9 +236,6 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-[#0c0722] text-slate-100 flex flex-col font-sans selection:bg-pink-500 selection:text-white relative">
-      {/* Supabase Connection Status Bar (Development Interface) */}
-      <SupabaseDevStatusBar />
-
       {/* Toast Notification Container */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom-5 duration-300">
@@ -174,6 +246,7 @@ function AppContent() {
             <span>{toast.message}</span>
             <button
               onClick={hideToast}
+              aria-label="Dismiss notification"
               className="ml-2 text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
@@ -182,43 +255,7 @@ function AppContent() {
         </div>
       )}
 
-      {/* Top Banner Notice if logged in with Supabase */}
-      {user && (
-        <aside aria-label="Authenticated session" className="bg-gradient-to-r from-pink-600 via-purple-700 to-indigo-800 py-1.5 px-4 text-center text-xs font-bold text-white flex items-center justify-center gap-3 shadow-md">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>
-              Logged in as <strong className="underline underline-offset-2">{profile?.full_name || user.email}</strong> (VERIFIED SELLER)
-            </span>
-          </div>
-          <button
-            onClick={() => navigateTo('dashboard')}
-            className="underline text-[11px] text-pink-200 hover:text-white cursor-pointer font-bold"
-          >
-            Seller Dashboard
-          </button>
-          <span>•</span>
-          <button
-            onClick={() => navigateTo('admin')}
-            className="underline text-[11px] text-amber-200 hover:text-white cursor-pointer font-bold flex items-center gap-1"
-          >
-            <ShieldCheck className="w-3 h-3 text-amber-300" />
-            <span>Super Admin Portal</span>
-          </button>
-          <span>•</span>
-          <button
-            onClick={async () => {
-              await signOut();
-              navigateTo('home');
-            }}
-            className="underline text-[11px] text-pink-200 hover:text-rose-300 cursor-pointer font-bold"
-          >
-            Log Out
-          </button>
-        </aside>
-      )}
-
-      {/* Header */}
+      {/* Clean Public Header (Zero AdminCore references) */}
       <Header
         currentPage={currentPage}
         onNavigate={navigateTo}
@@ -236,29 +273,139 @@ function AppContent() {
               <HomePage
                 onNavigate={navigateTo}
                 onOpenProductModal={(p) => setSelectedProduct(p)}
+                onOpenProductDetail={openProductDetail}
                 onOpenSignup={handleOpenSignup}
                 onOpenLogin={handleOpenLogin}
               />
             }
           />
+
           <Route
             path="/marketplace"
             element={
               <MarketplacePage
                 onOpenProductModal={(p) => setSelectedProduct(p)}
+                onOpenProductDetail={openProductDetail}
                 onNavigate={navigateTo}
                 onOpenSignup={handleOpenSignup}
               />
             }
           />
+
           <Route
-            path="/dashboard"
+            path="/product/:id"
+            element={
+              <ProductDetailRouteWrapper
+                onNavigate={navigateTo}
+                onOpenAffiliateSignup={() => handleOpenSignup('affiliate')}
+              />
+            }
+          />
+
+          {/* Affiliate Routes */}
+          <Route
+            path="/affiliate"
+            element={
+              <ForAffiliatesPage
+                onNavigate={navigateTo}
+                onOpenSignup={() => handleOpenSignup('affiliate')}
+              />
+            }
+          />
+          <Route
+            path="/affiliate/auth"
+            element={
+              <ForAffiliatesPage
+                onNavigate={navigateTo}
+                onOpenSignup={() => handleOpenSignup('affiliate')}
+              />
+            }
+          />
+          <Route
+            path="/affiliates"
+            element={
+              <ForAffiliatesPage
+                onNavigate={navigateTo}
+                onOpenSignup={() => handleOpenSignup('affiliate')}
+              />
+            }
+          />
+          <Route
+            path="/affiliate/dashboard"
+            element={
+              <AffiliateDashboardPage
+                onNavigate={navigateTo}
+                onOpenProductModal={(p) => setSelectedProduct(p)}
+                onOpenProductDetail={openProductDetail}
+              />
+            }
+          />
+
+          {/* Seller Routes */}
+          <Route
+            path="/seller"
+            element={
+              <ForSellersPage
+                onNavigate={navigateTo}
+                onOpenSignup={() => handleOpenSignup('seller')}
+              />
+            }
+          />
+          <Route
+            path="/seller/auth"
+            element={
+              <ForSellersPage
+                onNavigate={navigateTo}
+                onOpenSignup={() => handleOpenSignup('seller')}
+              />
+            }
+          />
+          <Route
+            path="/sellers"
+            element={
+              <ForSellersPage
+                onNavigate={navigateTo}
+                onOpenSignup={() => handleOpenSignup('seller')}
+              />
+            }
+          />
+          <Route
+            path="/seller/dashboard"
             element={
               <SellerDashboardPage
                 onNavigate={navigateTo}
                 onOpenProductModal={(p) => setSelectedProduct(p)}
+                onOpenProductDetail={openProductDetail}
                 onOpenAddModal={handleOpenAddModal}
                 onOpenEditModal={handleOpenEditModal}
+              />
+            }
+          />
+
+          {/* Dedicated Auth Routes */}
+          <Route
+            path="/login"
+            element={<LoginPage onNavigate={navigateTo} initialAuthTab="login" />}
+          />
+          <Route
+            path="/signup"
+            element={<LoginPage onNavigate={navigateTo} initialAuthTab="signup" />}
+          />
+
+          {/* Legacy /dashboard role redirect */}
+          <Route path="/dashboard" element={<DashboardRedirect />} />
+
+          {/* Private AdminCore Routes (Never linked in public UI) */}
+          <Route
+            path="/admin-login"
+            element={<AdminLoginPage onNavigate={navigateTo} />}
+          />
+          <Route
+            path="/admincore"
+            element={
+              <AdminDashboardPage
+                onNavigate={navigateTo}
+                onOpenProductModal={(p) => setSelectedProduct(p)}
               />
             }
           />
@@ -271,12 +418,14 @@ function AppContent() {
               />
             }
           />
+
+          {/* Info & Marketplace Supporting Routes */}
           <Route
             path="/how-it-works"
             element={
               <HowItWorksPage
                 onNavigate={navigateTo}
-                onOpenSignup={handleOpenSignup}
+                onOpenSignup={() => handleOpenSignup('affiliate')}
               />
             }
           />
@@ -286,6 +435,7 @@ function AppContent() {
               <DirectoryPage
                 onNavigate={navigateTo}
                 onOpenProductModal={(p) => setSelectedProduct(p)}
+                onOpenProductDetail={openProductDetail}
                 onOpenSignup={handleOpenSignup}
               />
             }
@@ -295,25 +445,7 @@ function AppContent() {
             element={
               <GuaranteePage
                 onNavigate={navigateTo}
-                onOpenSignup={handleOpenSignup}
-              />
-            }
-          />
-          <Route
-            path="/sellers"
-            element={
-              <ForSellersPage
-                onNavigate={navigateTo}
-                onOpenSignup={handleOpenSignup}
-              />
-            }
-          />
-          <Route
-            path="/affiliates"
-            element={
-              <ForAffiliatesPage
-                onNavigate={navigateTo}
-                onOpenSignup={handleOpenSignup}
+                onOpenSignup={() => handleOpenSignup('affiliate')}
               />
             }
           />
@@ -322,7 +454,7 @@ function AppContent() {
             element={
               <AboutPage
                 onNavigate={navigateTo}
-                onOpenSignup={handleOpenSignup}
+                onOpenSignup={() => handleOpenSignup('affiliate')}
               />
             }
           />
@@ -330,22 +462,27 @@ function AppContent() {
             path="/contact"
             element={<ContactPage onNavigate={navigateTo} />}
           />
+
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
 
-      {/* Footer */}
+      {/* Clean Public Footer (Zero AdminCore references) */}
       <Footer onNavigate={navigateTo} />
 
-      {/* Product Details & Simulated Checkout Modal */}
+      {/* Product Details Quick Modal */}
       <ProductModal
         product={selectedProduct}
         onClose={() => setSelectedProduct(null)}
-        onOpenSignup={handleOpenSignup}
+        onOpenSignup={() => handleOpenSignup('affiliate')}
         onShopNowClick={handleShopNowClick}
+        onViewFullPage={(p) => {
+          setSelectedProduct(null);
+          openProductDetail(p);
+        }}
       />
 
-      {/* Add / Edit Product Modal */}
+      {/* Add / Edit Product Modal (Seller Submission) */}
       <AddEditProductModal
         isOpen={isAddEditModalOpen}
         onClose={() => setIsAddEditModalOpen(false)}
@@ -353,16 +490,17 @@ function AppContent() {
         editingProduct={editingProduct}
       />
 
-      {/* Auth Modal (Login / Sign Up) */}
+      {/* Auth Modal (Login / Sign Up / Reset) */}
       <AuthModal
         isOpen={authModalOpen}
         initialMode={authModalMode}
+        defaultRole={authDefaultRole}
         onClose={() => setAuthModalOpen(false)}
         onSuccess={handleAuthSuccess}
       />
 
-      {/* PayU Hosted Checkout Modal for Lifetime Seller Membership (₹999) */}
-      <PayUCheckoutModal onSuccessRedirect={() => navigateTo('dashboard')} />
+      {/* PayU Hosted Checkout Modal (Gateway currently disabled until PayU activation) */}
+      <PayUCheckoutModal onSuccessRedirect={() => navigateTo('seller-dashboard')} />
     </div>
   );
 }

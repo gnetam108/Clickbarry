@@ -1,6 +1,19 @@
+export type UserRole = 'affiliate' | 'seller' | 'admin';
+
 export type PageId =
   | 'home'
   | 'marketplace'
+  | 'product-detail'
+  | 'affiliate'
+  | 'affiliate-auth'
+  | 'affiliate-dashboard'
+  | 'seller'
+  | 'seller-auth'
+  | 'seller-dashboard'
+  | 'login'
+  | 'signup'
+  | 'admin-login'
+  | 'admincore'
   | 'dashboard'
   | 'admin'
   | 'how-it-works'
@@ -9,9 +22,7 @@ export type PageId =
   | 'sellers'
   | 'affiliates'
   | 'about'
-  | 'contact'
-  | 'login'
-  | 'signup';
+  | 'contact';
 
 export interface Product {
   id: string;
