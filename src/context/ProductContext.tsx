@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { Product, ToastMessage } from '../types';
+import { Product, ProductReportRecord, ToastMessage } from '../types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
+import { calculateSellerSaleBreakdown } from '../lib/fees';
 import defaultProductCover from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
 
 export interface AddProductInput {
@@ -36,10 +37,12 @@ export interface SellerAnalytics {
 }
 
 interface ProductContextType {
-  products: Product[]; // Public Marketplace ONLY: status === 'published' && approvalStatus === 'approved'
+  products: Product[]; // Authenticated Marketplace ONLY: status === 'published' && approvalStatus === 'approved'
   realProducts: Product[];
   allProducts: Product[]; // Admin catalog: all products across pending/approved/rejected/draft
   sellerProducts: Product[];
+  productReports: ProductReportRecord[];
+  sellerPlatformFeePct: number;
   isLoading: boolean;
   toast: ToastMessage | null;
   showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
@@ -47,9 +50,12 @@ interface ProductContextType {
   refreshProducts: () => Promise<void>;
   fetchAllProductsAdmin: () => Promise<Product[]>;
   fetchSellerProducts: (sellerId: string) => Promise<Product[]>;
+  fetchProductReportsAdmin: () => Promise<ProductReportRecord[]>;
   addProduct: (productData: AddProductInput) => Promise<{ success: boolean; product?: Product; error?: string }>;
   updateProduct: (id: string, updates: Partial<Product>) => Promise<{ success: boolean; error?: string }>;
   deleteProduct: (id: string) => Promise<{ success: boolean; error?: string }>;
+  reportProduct: (productId: string, reason: string, details?: string) => Promise<{ success: boolean; error?: string }>;
+  resolveProductReport: (reportId: string, status: ProductReportRecord['status'], adminNotes?: string) => Promise<{ success: boolean; error?: string }>;
   recordView: (id: string) => Promise<void>;
   recordClick: (id: string) => Promise<void>;
   fetchSellerAnalytics: (sellerId: string) => Promise<SellerAnalytics>;
@@ -67,10 +73,12 @@ const CATEGORY_LABELS: Record<string, string> = {
 const ProductContext = createContext<ProductContextType | undefined>(undefined);
 
 export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, isAdmin } = useAuth();
+  const { user, profile, isAdmin } = useAuth();
   const [realProducts, setRealProducts] = useState<Product[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [sellerProducts, setSellerProducts] = useState<Product[]>([]);
+  const [productReports, setProductReports] = useState<ProductReportRecord[]>([]);
+  const [sellerPlatformFeePct, setSellerPlatformFeePct] = useState<number>(15);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
@@ -207,9 +215,9 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return rows.map((r) => mapDbRowToProduct(r, profileMap, metricsMap));
   };
 
-  // Public Marketplace: strictly published + approved products from Supabase
+  // Marketplace: authenticated users only — strictly published + approved products from Supabase
   const refreshProducts = useCallback(async () => {
-    if (!supabase) {
+    if (!supabase || !user) {
       setRealProducts([]);
       setIsLoading(false);
       return;
@@ -217,6 +225,16 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     try {
       setIsLoading(true);
+      const { data: settingsRow } = await supabase
+        .from('website_settings')
+        .select('platform_fee_percentage')
+        .eq('id', 'clickbarry_main')
+        .maybeSingle();
+
+      if (settingsRow && Number(settingsRow.platform_fee_percentage) > 0) {
+        setSellerPlatformFeePct(Number(settingsRow.platform_fee_percentage));
+      }
+
       let queryRes = await supabase
         .from('products')
         .select('*')
@@ -246,7 +264,7 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [user]);
 
   // Admin catalog: all products across pending, approved, rejected, draft
   const fetchAllProductsAdmin = useCallback(async (): Promise<Product[]> => {
@@ -294,6 +312,34 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, []);
 
+  // Admin reports queue
+  const fetchProductReportsAdmin = useCallback(async (): Promise<ProductReportRecord[]> => {
+    if (!supabase || !isAdmin) return [];
+    try {
+      const { data, error } = await supabase
+        .from('product_reports')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error || !data) return [];
+      const mapped: ProductReportRecord[] = data.map((r: any) => ({
+        id: r.id,
+        productId: r.product_id,
+        reporterId: r.reporter_id,
+        reason: r.reason,
+        details: r.details || undefined,
+        status: r.status || 'open',
+        adminNotes: r.admin_notes || undefined,
+        resolvedBy: r.resolved_by || undefined,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      }));
+      setProductReports(mapped);
+      return mapped;
+    } catch {
+      return [];
+    }
+  }, [isAdmin]);
+
   useEffect(() => {
     refreshProducts();
   }, [refreshProducts]);
@@ -301,14 +347,17 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
   useEffect(() => {
     if (isAdmin) {
       fetchAllProductsAdmin();
+      fetchProductReportsAdmin();
     } else {
       setAllProducts([]);
+      setProductReports([]);
     }
-  }, [isAdmin, fetchAllProductsAdmin]);
+  }, [isAdmin, fetchAllProductsAdmin, fetchProductReportsAdmin]);
 
   useEffect(() => {
     if (!user) {
       setSellerProducts([]);
+      setRealProducts([]);
     }
   }, [user]);
 
@@ -329,6 +378,22 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (authError || !authData.user) {
         showToast('You must be logged in as a Seller to submit products', 'error');
         return { success: false, error: 'Unauthorized: Seller login required' };
+      }
+
+      // Hard enforcement: Sellers must hold an Active verified ₹999 Lifetime Membership before adding products
+      if (!isAdmin && profile?.subscription_status !== 'active') {
+        const lockMsg = 'Seller ₹999 Lifetime Pass verification is required before adding products.';
+        showToast(lockMsg, 'error');
+        return { success: false, error: lockMsg };
+      }
+
+      // Enforce 30%-100% bounds AND 15% ClickBarry Seller platform fee non-negative net rule
+      const commRate = Number(productData.commissionRate ?? 40);
+      const breakdown = calculateSellerSaleBreakdown(Number(productData.price), commRate, sellerPlatformFeePct);
+      if (!breakdown.isValid) {
+        const errMsg = breakdown.validationError || 'Invalid product price or commission rate.';
+        showToast(errMsg, 'error');
+        return { success: false, error: errMsg };
       }
 
       const sellerId = authData.user.id;
@@ -411,6 +476,21 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
 
     try {
+      if (updates.price !== undefined || updates.commissionRate !== undefined) {
+        const existingProd =
+          sellerProducts.find((p) => p.id === id) || allProducts.find((p) => p.id === id) || realProducts.find((p) => p.id === id);
+        const effPrice = updates.price !== undefined ? Number(updates.price) : existingProd?.price ?? 0;
+        const effRate = updates.commissionRate !== undefined ? Number(updates.commissionRate) : existingProd?.commissionRate ?? 40;
+        if (!isAdmin && (updates.commissionRate !== undefined || updates.price !== undefined)) {
+          const breakdown = calculateSellerSaleBreakdown(effPrice, effRate, sellerPlatformFeePct);
+          if (!breakdown.isValid) {
+            const errMsg = breakdown.validationError || 'Invalid commission rate after platform fee.';
+            showToast(errMsg, 'error');
+            return { success: false, error: errMsg };
+          }
+        }
+      }
+
       const dbUpdates: any = {
         updated_at: new Date().toISOString()
       };
@@ -694,6 +774,64 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
+  // Report a Marketplace product for Admin review
+  const reportProduct = async (
+    productId: string,
+    reason: string,
+    details?: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!supabase || !user) {
+      return { success: false, error: 'Sign in required to report a product.' };
+    }
+    if (!reason.trim()) {
+      return { success: false, error: 'Please select a reason for reporting.' };
+    }
+    try {
+      const { error } = await supabase.from('product_reports').insert({
+        product_id: productId,
+        reporter_id: user.id,
+        reason: reason.trim(),
+        details: details?.trim() || null,
+        status: 'open'
+      });
+      if (error) return { success: false, error: error.message };
+      showToast('Report submitted to ClickBarry Moderation Team. Thank you!', 'success');
+      if (isAdmin) await fetchProductReportsAdmin();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to submit product report.' };
+    }
+  };
+
+  const resolveProductReport = async (
+    reportId: string,
+    status: ProductReportRecord['status'],
+    adminNotes?: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!supabase || !isAdmin || !user) {
+      return { success: false, error: 'Unauthorized: Admin only.' };
+    }
+    try {
+      const { error } = await supabase
+        .from('product_reports')
+        .update({
+          status,
+          admin_notes: adminNotes?.trim() || null,
+          resolved_by: user.id,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', reportId);
+      if (error) return { success: false, error: error.message };
+      setProductReports((prev) =>
+        prev.map((r) => (r.id === reportId ? { ...r, status, adminNotes, resolvedBy: user.id } : r))
+      );
+      showToast(`Report marked as ${status}.`, 'success');
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to resolve report.' };
+    }
+  };
+
   return (
     <ProductContext.Provider
       value={{
@@ -701,6 +839,8 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         realProducts,
         allProducts,
         sellerProducts,
+        productReports,
+        sellerPlatformFeePct,
         isLoading,
         toast,
         showToast,
@@ -708,9 +848,12 @@ export const ProductProvider: React.FC<{ children: React.ReactNode }> = ({ child
         refreshProducts,
         fetchAllProductsAdmin,
         fetchSellerProducts,
+        fetchProductReportsAdmin,
         addProduct,
         updateProduct,
         deleteProduct,
+        reportProduct,
+        resolveProductReport,
         recordView,
         recordClick,
         fetchSellerAnalytics,

@@ -93,7 +93,9 @@ export const AdminProcessPayoutModal: React.FC<AdminProcessPayoutModalProps> = (
           </div>
           <h2 className="text-xl font-black text-white">Process Withdrawal #{request.requestNumber}</h2>
           <p className="text-xs text-slate-300">
-            Amount: <strong className="text-emerald-400 font-bold text-sm">₹{request.amount}</strong> via{' '}
+            Gross: <strong className="text-white">₹{request.amount.toLocaleString()}</strong> • Fee ({request.platformFeePct}%):{' '}
+            <strong className="text-amber-300">-₹{request.platformFeeAmount.toLocaleString()}</strong> • Net Transfer:{' '}
+            <strong className="text-emerald-400 font-bold text-sm">₹{request.netPayableAmount.toLocaleString()}</strong> via{' '}
             <strong className="text-white uppercase">{request.paymentMethod}</strong>
           </p>
         </div>
@@ -110,6 +112,18 @@ export const AdminProcessPayoutModal: React.FC<AdminProcessPayoutModalProps> = (
           <div className="flex justify-between">
             <span className="text-slate-400">Affiliate:</span>
             <span className="font-bold text-white">{request.affiliateName || request.affiliateEmail || request.affiliateId}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Gross Requested:</span>
+            <span className="font-semibold text-white">₹{request.amount.toLocaleString()}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">ClickBarry Fee ({request.platformFeePct}%):</span>
+            <span className="font-semibold text-amber-300">- ₹{request.platformFeeAmount.toLocaleString()}</span>
+          </div>
+          <div className="flex justify-between border-t border-purple-900/60 pt-1.5">
+            <span className="text-slate-300 font-bold">Net Payable Transfer:</span>
+            <span className="font-black text-emerald-400 text-sm">₹{request.netPayableAmount.toLocaleString()}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-slate-400">Requested On:</span>

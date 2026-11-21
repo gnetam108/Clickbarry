@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { SellerMembershipPayment } from '../types';
+import { MembershipStatus, SellerMembershipPayment } from '../types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
 import { useProducts } from './ProductContext';
@@ -28,6 +28,8 @@ export interface PayUCheckoutData {
 
 interface PayUMembershipContextType {
   isLifetimeSeller: boolean;
+  membershipStatus: MembershipStatus;
+  membershipStatusLabel: 'Payment Pending' | 'Active' | 'Failed' | 'Refunded';
   isPaymentGatewayEnabled: boolean;
   membershipPayment: SellerMembershipPayment | null;
   isLoading: boolean;
@@ -94,6 +96,8 @@ export const PayUMembershipProvider: React.FC<{ children: React.ReactNode }> = (
           sellerName: d.seller_name,
           txnid: d.txnid,
           payuId: d.payu_id,
+          gatewayOrderId: d.gateway_order_id,
+          gatewayPaymentId: d.gateway_payment_id,
           amount: Number(d.amount),
           currency: d.currency || 'INR',
           status: d.status,
@@ -101,6 +105,7 @@ export const PayUMembershipProvider: React.FC<{ children: React.ReactNode }> = (
           bankRefNum: d.bank_ref_num,
           hashVerified: Boolean(d.hash_verified),
           membershipActivatedAt: d.membership_activated_at,
+          refundedAt: d.refunded_at,
           createdAt: d.created_at,
           updatedAt: d.updated_at
         }));
@@ -119,37 +124,71 @@ export const PayUMembershipProvider: React.FC<{ children: React.ReactNode }> = (
     loadPayments();
   }, [loadPayments]);
 
-  // Check if current user has a genuinely verified Lifetime Seller Membership
+  // Check if current user has a genuinely verified Lifetime Seller Membership & compute exact status
   const currentMembership = useMemo(() => {
     if (!user) {
-      return { isLifetimeSeller: false, payment: null };
+      return {
+        isLifetimeSeller: false,
+        membershipStatus: 'none' as MembershipStatus,
+        membershipStatusLabel: 'Payment Pending' as const,
+        payment: null as SellerMembershipPayment | null
+      };
     }
+
+    const userPayments = payments.filter(
+      (p) => p.sellerId === user.id || p.sellerEmail?.toLowerCase() === user.email?.toLowerCase()
+    );
+    const latestPayment = userPayments[0] || null;
 
     if (profile?.subscription_status === 'active') {
-      const userPayment =
-        payments.find(
-          (p) =>
-            (p.sellerId === user.id || p.sellerEmail?.toLowerCase() === user.email?.toLowerCase()) &&
-            p.status === 'success' &&
-            p.hashVerified &&
-            p.amount === 999
-        ) || null;
-      return { isLifetimeSeller: true, payment: userPayment };
+      const activePayment =
+        userPayments.find((p) => p.status === 'success' && p.hashVerified && p.amount === 999) || latestPayment;
+      return {
+        isLifetimeSeller: true,
+        membershipStatus: 'active' as MembershipStatus,
+        membershipStatusLabel: 'Active' as const,
+        payment: activePayment
+      };
     }
 
-    const verifiedPayment = payments.find(
-      (p) =>
-        (p.sellerId === user.id || p.sellerEmail?.toLowerCase() === user.email?.toLowerCase()) &&
-        p.status === 'success' &&
-        p.hashVerified &&
-        p.amount === 999
+    if (profile?.subscription_status === 'refunded' || latestPayment?.status === 'refunded') {
+      return {
+        isLifetimeSeller: false,
+        membershipStatus: 'refunded' as MembershipStatus,
+        membershipStatusLabel: 'Refunded' as const,
+        payment: latestPayment
+      };
+    }
+
+    if (profile?.subscription_status === 'failed' || latestPayment?.status === 'failed' || latestPayment?.status === 'cancelled') {
+      return {
+        isLifetimeSeller: false,
+        membershipStatus: 'failed' as MembershipStatus,
+        membershipStatusLabel: 'Failed' as const,
+        payment: latestPayment
+      };
+    }
+
+    const verifiedPayment = userPayments.find(
+      (p) => p.status === 'success' && p.hashVerified && p.amount === 999
     );
 
     if (verifiedPayment) {
-      return { isLifetimeSeller: true, payment: verifiedPayment };
+      return {
+        isLifetimeSeller: true,
+        membershipStatus: 'active' as MembershipStatus,
+        membershipStatusLabel: 'Active' as const,
+        payment: verifiedPayment
+      };
     }
 
-    return { isLifetimeSeller: false, payment: null };
+    const pendingStatus: MembershipStatus = profile?.subscription_status === 'pending' ? 'pending' : 'none';
+    return {
+      isLifetimeSeller: false,
+      membershipStatus: pendingStatus,
+      membershipStatusLabel: 'Payment Pending' as const,
+      payment: latestPayment
+    };
   }, [user, profile, payments]);
 
   // Disabled payment initiation until PayU server integration is enabled
@@ -182,6 +221,8 @@ export const PayUMembershipProvider: React.FC<{ children: React.ReactNode }> = (
     <PayUMembershipContext.Provider
       value={{
         isLifetimeSeller: currentMembership.isLifetimeSeller,
+        membershipStatus: currentMembership.membershipStatus,
+        membershipStatusLabel: currentMembership.membershipStatusLabel,
         isPaymentGatewayEnabled: PAYMENT_GATEWAY_ENABLED,
         membershipPayment: currentMembership.payment,
         isLoading,

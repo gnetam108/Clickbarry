@@ -1,12 +1,15 @@
 import React from 'react';
 import { StrawberryLogo } from './StrawberryLogo';
 import { PageId } from '../types';
+import { useAuth } from '../context/AuthContext';
 
 interface FooterProps {
   onNavigate: (page: PageId) => void;
 }
 
 export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
+  const { user } = useAuth();
+
   return (
     <footer className="relative w-full bg-[#0a0518] border-t border-purple-900/50 text-slate-300 overflow-hidden">
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-3/4 max-w-4xl h-[2px] bg-gradient-to-r from-transparent via-pink-500 to-transparent shadow-[0_0_20px_rgba(236,72,153,0.9)]" />
@@ -21,10 +24,14 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
             <button onClick={() => onNavigate('home')} className="hover:text-pink-400 transition-colors cursor-pointer">
               Home
             </button>
-            <span className="text-purple-700 select-none">|</span>
-            <button onClick={() => onNavigate('marketplace')} className="hover:text-pink-400 transition-colors cursor-pointer">
-              Marketplace
-            </button>
+            {user && (
+              <>
+                <span className="text-purple-700 select-none">|</span>
+                <button onClick={() => onNavigate('marketplace')} className="hover:text-pink-400 transition-colors cursor-pointer">
+                  Marketplace
+                </button>
+              </>
+            )}
             <span className="text-purple-700 select-none">|</span>
             <button onClick={() => onNavigate('affiliate')} className="hover:text-pink-400 transition-colors cursor-pointer">
               Affiliate
@@ -37,10 +44,14 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
             <button onClick={() => onNavigate('how-it-works')} className="hover:text-pink-400 transition-colors cursor-pointer">
               How It Works
             </button>
-            <span className="text-purple-700 select-none">|</span>
-            <button onClick={() => onNavigate('directory')} className="hover:text-pink-400 transition-colors cursor-pointer">
-              Directory
-            </button>
+            {user && (
+              <>
+                <span className="text-purple-700 select-none">|</span>
+                <button onClick={() => onNavigate('directory')} className="hover:text-pink-400 transition-colors cursor-pointer">
+                  Directory
+                </button>
+              </>
+            )}
             <span className="text-purple-700 select-none">|</span>
             <button onClick={() => onNavigate('guarantee')} className="hover:text-pink-400 transition-colors cursor-pointer">
               Guarantee

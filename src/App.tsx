@@ -15,11 +15,12 @@ import {
 } from 'react-router-dom';
 import { PageId, Product, UserRole } from './types';
 import { ProductProvider, useProducts } from './context/ProductContext';
-import { AuthProvider, useAuth } from './context/AuthContext';
+import { AuthProvider, useAuth, OAUTH_REDIRECT_PENDING_KEY } from './context/AuthContext';
 import { HybridAffiliateProvider, useHybridAffiliate } from './context/HybridAffiliateContext';
 import { WalletProvider } from './context/WalletContext';
 import { AdminProvider } from './context/AdminContext';
-import { PayUMembershipProvider } from './context/PayUMembershipContext';
+import { PayUMembershipProvider, usePayUMembership } from './context/PayUMembershipContext';
+import { ReferralProvider, useReferrals } from './context/ReferralContext';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
 import { HomePage } from './pages/HomePage';
@@ -107,6 +108,31 @@ const ProductDetailRouteWrapper: React.FC<{
   );
 };
 
+const RequireAuth: React.FC<{ children: React.ReactElement }> = ({ children }) => {
+  const { user, isLoading } = useAuth();
+  const { showToast } = useProducts();
+
+  useEffect(() => {
+    if (!isLoading && !user) {
+      showToast('Please sign in or register free to access the ClickBarry Marketplace.', 'info');
+    }
+  }, [isLoading, user, showToast]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center bg-[#0c0722]">
+        <div className="w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+};
+
 const DashboardRedirect: React.FC = () => {
   const { user, role, isLoading } = useAuth();
   if (isLoading) {
@@ -129,9 +155,11 @@ const DashboardRedirect: React.FC = () => {
 };
 
 function AppContent() {
-  const { user, role, isPasswordRecovery } = useAuth();
-  const { refreshProducts, fetchSellerProducts, recordClick, toast, hideToast } = useProducts();
+  const { user, profile, role, isLoading, isPasswordRecovery, oauthError, clearOAuthError } = useAuth();
+  const { refreshProducts, fetchSellerProducts, recordClick, showToast, toast, hideToast } = useProducts();
   const { resolveAndTrackClick } = useHybridAffiliate();
+  const { isLifetimeSeller, isLoading: isMembershipLoading, openCheckout } = usePayUMembership();
+  const { captureReferralCodeFromUrl } = useReferrals();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -146,6 +174,11 @@ function AppContent() {
   const [authDefaultRole, setAuthDefaultRole] = useState<'affiliate' | 'seller'>('affiliate');
 
   const trackedSlugRef = useRef<string | null>(null);
+
+  // Capture ?ref=REF_CODE across any landing route
+  useEffect(() => {
+    captureReferralCodeFromUrl();
+  }, [location.search, captureReferralCodeFromUrl]);
 
   // Public incoming affiliate tracking link clicks: ?cb_trk=...
   useEffect(() => {
@@ -178,6 +211,69 @@ function AppContent() {
     }
   }, [isPasswordRecovery]);
 
+  // Surface any Google OAuth callback error on return to origin
+  useEffect(() => {
+    if (oauthError) {
+      showToast(oauthError, 'error');
+      clearOAuthError();
+    }
+  }, [oauthError, showToast, clearOAuthError]);
+
+  // Redirect authenticated Google OAuth users to their saved role dashboard
+  useEffect(() => {
+    if (typeof window === 'undefined' || isLoading || !user || !role) return;
+    let isOAuthReturn = false;
+    try {
+      isOAuthReturn = localStorage.getItem(OAUTH_REDIRECT_PENDING_KEY) === '1';
+    } catch {}
+
+    if (!isOAuthReturn) return;
+
+    try {
+      localStorage.removeItem(OAUTH_REDIRECT_PENDING_KEY);
+    } catch {}
+
+    // Clean any residual OAuth query params (?code=...) on origin
+    if (window.location.search.includes('code=')) {
+      window.history.replaceState(null, '', normalizedPath);
+    }
+
+    const displayName = profile?.full_name || user.email?.split('@')[0] || 'Member';
+    showToast(`Signed in with Google as ${displayName}`, 'success');
+
+    if (role === 'admin') {
+      navigate('/admincore', { replace: true });
+    } else if (role === 'seller') {
+      navigate('/seller/dashboard', { replace: true });
+      if (!isLifetimeSeller) {
+        try {
+          sessionStorage.setItem(`cb_prompt_seller_checkout_${user.id}`, '1');
+        } catch {}
+      }
+    } else {
+      navigate('/affiliate/dashboard', { replace: true });
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [isLoading, user, role, isLifetimeSeller, profile, normalizedPath, navigate, showToast]);
+
+  // Immediately prompt ₹999 Lifetime Access popup once after Seller signup/login when payment is not active
+  useEffect(() => {
+    if (typeof window === 'undefined' || isLoading || isMembershipLoading || !user || role !== 'seller' || isLifetimeSeller) {
+      return;
+    }
+    const promptKey = `cb_prompt_seller_checkout_${user.id}`;
+    const shownKey = `cb_checkout_auto_prompted_${user.id}`;
+    try {
+      const shouldPrompt = sessionStorage.getItem(promptKey) === '1';
+      const alreadyShown = sessionStorage.getItem(shownKey) === '1';
+      if ((shouldPrompt || normalizedPath === '/seller/dashboard') && !alreadyShown) {
+        sessionStorage.removeItem(promptKey);
+        sessionStorage.setItem(shownKey, '1');
+        openCheckout();
+      }
+    } catch {}
+  }, [isLoading, isMembershipLoading, user, role, isLifetimeSeller, normalizedPath, openCheckout]);
+
   const navigateTo = (page: PageId) => {
     const targetPath = PAGE_PATHS[page] || '/';
     navigate(targetPath);
@@ -205,6 +301,11 @@ function AppContent() {
     if (targetRole === 'admin') {
       navigate('/admincore');
     } else if (targetRole === 'seller') {
+      if (user?.id) {
+        try {
+          sessionStorage.setItem(`cb_prompt_seller_checkout_${user.id}`, '1');
+        } catch {}
+      }
       navigate('/seller/dashboard');
     } else {
       navigate('/affiliate/dashboard');
@@ -283,22 +384,26 @@ function AppContent() {
           <Route
             path="/marketplace"
             element={
-              <MarketplacePage
-                onOpenProductModal={(p) => setSelectedProduct(p)}
-                onOpenProductDetail={openProductDetail}
-                onNavigate={navigateTo}
-                onOpenSignup={handleOpenSignup}
-              />
+              <RequireAuth>
+                <MarketplacePage
+                  onOpenProductModal={(p) => setSelectedProduct(p)}
+                  onOpenProductDetail={openProductDetail}
+                  onNavigate={navigateTo}
+                  onOpenSignup={handleOpenSignup}
+                />
+              </RequireAuth>
             }
           />
 
           <Route
             path="/product/:id"
             element={
-              <ProductDetailRouteWrapper
-                onNavigate={navigateTo}
-                onOpenAffiliateSignup={() => handleOpenSignup('affiliate')}
-              />
+              <RequireAuth>
+                <ProductDetailRouteWrapper
+                  onNavigate={navigateTo}
+                  onOpenAffiliateSignup={() => handleOpenSignup('affiliate')}
+                />
+              </RequireAuth>
             }
           />
 
@@ -432,12 +537,14 @@ function AppContent() {
           <Route
             path="/directory"
             element={
-              <DirectoryPage
-                onNavigate={navigateTo}
-                onOpenProductModal={(p) => setSelectedProduct(p)}
-                onOpenProductDetail={openProductDetail}
-                onOpenSignup={handleOpenSignup}
-              />
+              <RequireAuth>
+                <DirectoryPage
+                  onNavigate={navigateTo}
+                  onOpenProductModal={(p) => setSelectedProduct(p)}
+                  onOpenProductDetail={openProductDetail}
+                  onOpenSignup={handleOpenSignup}
+                />
+              </RequireAuth>
             }
           />
           <Route
@@ -509,17 +616,19 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <ProductProvider>
-          <HybridAffiliateProvider>
-            <WalletProvider>
-              <AdminProvider>
-                <PayUMembershipProvider>
-                  <AppContent />
-                </PayUMembershipProvider>
-              </AdminProvider>
-            </WalletProvider>
-          </HybridAffiliateProvider>
-        </ProductProvider>
+        <ReferralProvider>
+          <ProductProvider>
+            <HybridAffiliateProvider>
+              <WalletProvider>
+                <AdminProvider>
+                  <PayUMembershipProvider>
+                    <AppContent />
+                  </PayUMembershipProvider>
+                </AdminProvider>
+              </WalletProvider>
+            </HybridAffiliateProvider>
+          </ProductProvider>
+        </ReferralProvider>
       </AuthProvider>
     </BrowserRouter>
   );

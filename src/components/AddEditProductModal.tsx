@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Product } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useProducts } from '../context/ProductContext';
+import { usePayUMembership } from '../context/PayUMembershipContext';
+import { calculateSellerSaleBreakdown } from '../lib/fees';
 import sellerLaptopImage from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
 import affiliateCoinsImage from '../assets/images/affiliate_coins_chart_1794019709558.jpg';
 import heroImage from '../assets/images/hero_strawberries_1794019708249.jpg';
@@ -16,7 +18,8 @@ import {
   Upload,
   RefreshCw,
   Globe,
-  Clock
+  Clock,
+  ShieldAlert
 } from 'lucide-react';
 
 interface AddEditProductModalProps {
@@ -39,8 +42,9 @@ export const AddEditProductModal: React.FC<AddEditProductModalProps> = ({
   onSave,
   editingProduct
 }) => {
-  const { user, profile } = useAuth();
-  const { addProduct, updateProduct, uploadProductImage, showToast } = useProducts();
+  const { user, profile, isAdmin } = useAuth();
+  const { addProduct, updateProduct, uploadProductImage, sellerPlatformFeePct, showToast } = useProducts();
+  const { isLifetimeSeller } = usePayUMembership();
 
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState<'templates' | 'courses' | 'software' | 'ebooks' | 'graphics'>('templates');
@@ -156,6 +160,17 @@ export const AddEditProductModal: React.FC<AddEditProductModalProps> = ({
 
     if (!user) {
       setError('You must be signed in as a Seller to submit products.');
+      return;
+    }
+
+    if (!isAdmin && !isLifetimeSeller) {
+      setError('Your ₹999 Seller Lifetime Pass must be Active before submitting or publishing products.');
+      return;
+    }
+
+    const saleBreakdown = calculateSellerSaleBreakdown(Number(price), Number(commissionRate), sellerPlatformFeePct);
+    if (!saleBreakdown.isValid) {
+      setError(saleBreakdown.validationError || 'Invalid commission rate or product price.');
       return;
     }
 
@@ -306,22 +321,33 @@ export const AddEditProductModal: React.FC<AddEditProductModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                Affiliate Commission Rate (%) <span className="text-pink-500">*</span>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
+                <span>Affiliate Commission Rate (%) <span className="text-pink-500">*</span></span>
+                <span className="text-[10px] text-slate-400">Range: 30% – 100% (Max {100 - sellerPlatformFeePct}% after {sellerPlatformFeePct}% fee)</span>
               </label>
               <div className="relative">
                 <input
                   type="number"
                   required
-                  min="1"
-                  max="90"
+                  min="30"
+                  max="100"
+                  step="1"
                   placeholder="40"
                   value={commissionRate}
-                  onChange={(e) => setCommissionRate(e.target.value ? Number(e.target.value) : '')}
+                  onChange={(e) => setCommissionRate(e.target.value !== '' ? Number(e.target.value) : '')}
                   className="w-full px-4 py-2.5 rounded-xl bg-[#1b1046] border border-purple-800 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-pink-500 font-bold"
                 />
                 <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs text-pink-400 font-bold">%</span>
               </div>
+              <input
+                type="range"
+                min={30}
+                max={100}
+                step={1}
+                value={Number(commissionRate) || 30}
+                onChange={(e) => setCommissionRate(Number(e.target.value))}
+                className="w-full mt-2 accent-pink-500 cursor-pointer"
+              />
             </div>
           </div>
 
@@ -362,6 +388,49 @@ export const AddEditProductModal: React.FC<AddEditProductModalProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Live Revenue & 15% ClickBarry Seller Fee Breakdown */}
+          {(() => {
+            const liveBd = calculateSellerSaleBreakdown(Number(price) || 0, Number(commissionRate) || 0, sellerPlatformFeePct);
+            return (
+              <div
+                className={`p-4 rounded-2xl border space-y-2 text-xs ${
+                  liveBd.isValid
+                    ? 'bg-[#170e3b] border-purple-700/80'
+                    : 'bg-red-950/60 border-red-500/80'
+                }`}
+              >
+                <div className="flex items-center justify-between font-bold text-white">
+                  <span>Live Per-Sale Revenue Split</span>
+                  <span className="text-[11px] text-slate-400">
+                    Price ₹{liveBd.price.toLocaleString()}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  <div className="p-2.5 rounded-xl bg-black/25 border border-purple-900/50">
+                    <span className="block text-[10px] text-slate-400">Affiliate ({liveBd.affiliateCommissionRate}%)</span>
+                    <span className="text-sm font-black text-emerald-400">₹{liveBd.affiliateCommission.toLocaleString()}</span>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-black/25 border border-purple-900/50">
+                    <span className="block text-[10px] text-slate-400">Platform Fee ({liveBd.platformFeePct}%)</span>
+                    <span className="text-sm font-black text-amber-300">₹{liveBd.platformFee.toLocaleString()}</span>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-black/25 border border-purple-900/50">
+                    <span className="block text-[10px] text-slate-400">Your Seller Net</span>
+                    <span className={`text-sm font-black ${liveBd.sellerNet < 0 ? 'text-red-400' : 'text-pink-300'}`}>
+                      ₹{liveBd.sellerNet.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+                {liveBd.validationError && (
+                  <div className="flex items-start gap-2 text-[11px] text-red-200 font-semibold pt-1">
+                    <ShieldAlert className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                    <span>{liveBd.validationError}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
@@ -570,8 +639,11 @@ export const AddEditProductModal: React.FC<AddEditProductModalProps> = ({
 
             <button
               type="submit"
-              disabled={isSubmitting}
-              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-pink-500 via-rose-500 to-pink-600 hover:from-pink-600 hover:to-rose-700 text-white font-bold text-xs shadow-lg shadow-pink-600/30 flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              disabled={
+                isSubmitting ||
+                !calculateSellerSaleBreakdown(Number(price) || 0, Number(commissionRate) || 0, sellerPlatformFeePct).isValid
+              }
+              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-pink-500 via-rose-500 to-pink-600 hover:from-pink-600 hover:to-rose-700 text-white font-bold text-xs shadow-lg shadow-pink-600/30 flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? (
                 <>

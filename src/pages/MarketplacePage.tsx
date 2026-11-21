@@ -16,7 +16,9 @@ import {
   Link2,
   TrendingUp,
   Rocket,
-  ArrowRight
+  ArrowRight,
+  Flag,
+  X
 } from 'lucide-react';
 
 interface MarketplacePageProps {
@@ -33,7 +35,7 @@ export const MarketplacePage: React.FC<MarketplacePageProps> = ({
   onOpenSignup
 }) => {
   const [searchParams] = useSearchParams();
-  const { products, recordView, recordClick, showToast } = useProducts();
+  const { products, recordView, recordClick, reportProduct, showToast } = useProducts();
   const { user, role } = useAuth();
   const { adminProducts, recordOutboundClick } = useHybridAffiliate();
 
@@ -45,6 +47,10 @@ export const MarketplacePage: React.FC<MarketplacePageProps> = ({
     'popular' | 'newest' | 'views' | 'price-low' | 'price-high' | 'commission'
   >('popular');
   const [promotingProduct, setPromotingProduct] = useState<Product | null>(null);
+  const [reportTarget, setReportTarget] = useState<Product | null>(null);
+  const [reportReason, setReportReason] = useState('Broken or invalid product link');
+  const [reportDetails, setReportDetails] = useState('');
+  const [isReporting, setIsReporting] = useState(false);
 
   useEffect(() => {
     const q = searchParams.get('q');
@@ -364,7 +370,28 @@ export const MarketplacePage: React.FC<MarketplacePageProps> = ({
                             <MousePointerClick className="w-3 h-3 text-pink-400" />
                             <span>{prod.clicks || 0}</span>
                           </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setReportTarget(prod);
+                              setReportReason('Broken or invalid product link');
+                              setReportDetails('');
+                            }}
+                            className="p-1 rounded text-slate-400 hover:text-red-400 transition-colors cursor-pointer"
+                            title="Report Product"
+                            aria-label={`Report ${prod.title}`}
+                          >
+                            <Flag className="w-3 h-3" />
+                          </button>
                         </div>
+                      </div>
+
+                      <div className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between text-[11px]">
+                        <span className="text-slate-300 font-medium">Affiliate Earns</span>
+                        <span className="text-emerald-400 font-extrabold">
+                          ₹{Math.round(prod.price * (prod.commissionRate / 100))} per sale
+                        </span>
                       </div>
 
                       <div className="grid grid-cols-3 gap-2">
@@ -409,6 +436,85 @@ export const MarketplacePage: React.FC<MarketplacePageProps> = ({
           onClose={() => setPromotingProduct(null)}
           onNavigateToDashboard={() => onNavigate('affiliate-dashboard')}
         />
+
+        {reportTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setIsReporting(true);
+                const res = await reportProduct(reportTarget.id, reportReason, reportDetails);
+                setIsReporting(false);
+                if (res.success) {
+                  setReportTarget(null);
+                  setReportDetails('');
+                }
+              }}
+              className="w-full max-w-md bg-[#140b33] border border-red-700/70 rounded-3xl p-6 shadow-2xl space-y-4"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  <Flag className="w-4 h-4 text-red-400" />
+                  <span>Report Marketplace Listing</span>
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setReportTarget(null)}
+                  className="text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-xs text-slate-300">
+                Reporting: <strong className="text-white">{reportTarget.title}</strong>
+              </p>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1">Reason</label>
+                  <select
+                    value={reportReason}
+                    onChange={(e) => setReportReason(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-xs text-white focus:outline-none focus:border-red-400"
+                  >
+                    <option value="Broken or invalid product link">Broken or invalid product link</option>
+                    <option value="Misleading pricing or commission">Misleading pricing or commission</option>
+                    <option value="Duplicate or spam listing">Duplicate or spam listing</option>
+                    <option value="Copyright / Prohibited content">Copyright / Prohibited content</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1">
+                    Additional Details (Optional)
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={reportDetails}
+                    onChange={(e) => setReportDetails(e.target.value)}
+                    placeholder="Describe the issue for ClickBarry Admin moderation..."
+                    className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setReportTarget(null)}
+                  className="px-4 py-2 rounded-xl bg-purple-950 text-slate-300 text-xs font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isReporting}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer disabled:opacity-60"
+                >
+                  {isReporting ? 'Submitting...' : 'Submit Report'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
 
         {/* Dual Role Onboarding Banner */}
         <div className="rounded-3xl bg-gradient-to-r from-pink-900/40 via-purple-900/40 to-indigo-900/40 border border-pink-500/30 p-6 sm:p-8 flex flex-col md:flex-row items-center justify-between gap-6">

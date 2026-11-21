@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { PageId, Product } from '../types';
 import { TESTIMONIALS } from '../data/mockData';
 import { useProducts } from '../context/ProductContext';
+import { useAuth } from '../context/AuthContext';
 import { GoldSealBadge } from '../components/GoldSealBadge';
 import heroImage from '../assets/images/hero_strawberries_1794019708249.jpg';
 import sellerLaptopImage from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
@@ -25,7 +26,8 @@ import {
   Search,
   CheckCircle2,
   Eye,
-  Rocket
+  Rocket,
+  Lock
 } from 'lucide-react';
 
 interface HomePageProps {
@@ -49,9 +51,11 @@ export const HomePage: React.FC<HomePageProps> = ({
   onNavigate,
   onOpenProductModal,
   onOpenProductDetail,
-  onOpenSignup
+  onOpenSignup,
+  onOpenLogin
 }) => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { products, recordView } = useProducts();
   const [activeTestimonialIndex, setActiveTestimonialIndex] = useState(0);
   const [heroSearchQuery, setHeroSearchQuery] = useState('');
@@ -134,14 +138,25 @@ export const HomePage: React.FC<HomePageProps> = ({
 
               {/* Primary CTAs */}
               <div className="pt-3 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                <button
-                  onClick={() => onNavigate('marketplace')}
-                  className="px-7 py-3.5 rounded-full bg-gradient-to-r from-pink-500 via-rose-500 to-pink-600 hover:from-pink-600 hover:to-rose-700 text-white font-bold text-sm sm:text-base shadow-xl shadow-pink-600/40 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <ShoppingBag className="w-4 h-4" />
-                  <span>Explore Marketplace</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
+                {user ? (
+                  <button
+                    onClick={() => onNavigate('marketplace')}
+                    className="px-7 py-3.5 rounded-full bg-gradient-to-r from-pink-500 via-rose-500 to-pink-600 hover:from-pink-600 hover:to-rose-700 text-white font-bold text-sm sm:text-base shadow-xl shadow-pink-600/40 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <ShoppingBag className="w-4 h-4" />
+                    <span>Explore Marketplace</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={onOpenLogin}
+                    className="px-7 py-3.5 rounded-full bg-gradient-to-r from-pink-500 via-rose-500 to-pink-600 hover:from-pink-600 hover:to-rose-700 text-white font-bold text-sm sm:text-base shadow-xl shadow-pink-600/40 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Lock className="w-4 h-4" />
+                    <span>Sign In to Access Marketplace</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                )}
 
                 <button
                   onClick={() => onNavigate('affiliate')}
@@ -183,8 +198,9 @@ export const HomePage: React.FC<HomePageProps> = ({
       </section>
 
       {/* ---------------------------------------------------- */}
-      {/* 2. FEATURED MARKETPLACE DISCOVERY SECTION (TOP PRIORITY) */}
+      {/* 2. AUTH-GATED MARKETPLACE DISCOVERY SECTION */}
       {/* ---------------------------------------------------- */}
+      {user ? (
       <section className="bg-[#0f0927] text-white py-14 lg:py-18 border-b border-purple-900/40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
           <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
@@ -351,6 +367,38 @@ export const HomePage: React.FC<HomePageProps> = ({
           )}
         </div>
       </section>
+      ) : (
+        <section className="bg-[#0f0927] text-white py-14 border-b border-purple-900/40">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="rounded-3xl bg-gradient-to-br from-[#180f3d] via-[#130b30] to-[#1a0d3f] border border-purple-800/80 p-8 sm:p-10 text-center space-y-5 shadow-2xl">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-pink-500/20 text-pink-300 text-xs font-bold uppercase tracking-wider border border-pink-500/30">
+                <Lock className="w-3.5 h-3.5" />
+                <span>Members-Only Affiliate Marketplace</span>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
+                Sign In to Browse &amp; Promote Verified Digital Products
+              </h2>
+              <p className="text-sm text-slate-300 max-w-2xl mx-auto leading-relaxed">
+                To protect creator listings and affiliate commission data, the ClickBarry Marketplace catalog is exclusively available to signed-in Affiliates and Sellers. Affiliates join <strong>100% free</strong> with Email or Google.
+              </p>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                <button
+                  onClick={() => onOpenSignup('affiliate')}
+                  className="w-full sm:w-auto px-7 py-3 rounded-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-bold text-sm shadow-lg cursor-pointer"
+                >
+                  Create Free Affiliate Account
+                </button>
+                <button
+                  onClick={onOpenLogin}
+                  className="w-full sm:w-auto px-7 py-3 rounded-full bg-pink-600 hover:bg-pink-700 text-white font-bold text-sm shadow-lg cursor-pointer"
+                >
+                  Login to Unlock Marketplace
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ---------------------------------------------------- */}
       {/* 3. HOW IT WORKS – 4 STEPS */}

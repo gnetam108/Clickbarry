@@ -8,6 +8,7 @@ import {
 } from '../types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
+import { calculateWithdrawalBreakdown } from '../lib/fees';
 
 export interface SubmitWithdrawalInput {
   amount: number;
@@ -49,8 +50,9 @@ interface WalletContextType {
 const DEFAULT_SETTINGS: PayoutSettings = {
   minWithdrawalAmount: 500,
   maxWithdrawalAmount: 100000,
+  withdrawalFeePercentage: 5,
   allowedPaymentMethods: ['upi', 'bank_transfer'],
-  processingInfo: 'Withdrawals are processed manually by Admin via UPI or NEFT/IMPS within 24-48 business hours.',
+  processingInfo: 'Withdrawals carry a 5% ClickBarry platform fee and are processed manually by Admin via UPI or NEFT/IMPS within 24-48 business hours.',
   isWithdrawalsEnabled: true
 };
 
@@ -131,11 +133,20 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setIsLoading(true);
 
     try {
-      const { data: setRes } = await supabase.from('payout_settings').select('*').limit(1).maybeSingle();
+      const [{ data: setRes }, { data: webSetRes }] = await Promise.all([
+        supabase.from('payout_settings').select('*').limit(1).maybeSingle(),
+        supabase.from('website_settings').select('withdrawal_fee_percentage').eq('id', 'clickbarry_main').maybeSingle()
+      ]);
+
+      const resolvedFeePct = Number(
+        (webSetRes as any)?.withdrawal_fee_percentage ?? (setRes as any)?.withdrawal_fee_percentage ?? 5
+      );
+
       if (setRes) {
         setSettings({
           minWithdrawalAmount: Number(setRes.min_withdrawal_amount) || 500,
           maxWithdrawalAmount: Number(setRes.max_withdrawal_amount) || 100000,
+          withdrawalFeePercentage: resolvedFeePct,
           allowedPaymentMethods: setRes.allowed_payment_methods || ['upi', 'bank_transfer'],
           processingInfo: setRes.processing_info || DEFAULT_SETTINGS.processingInfo,
           isWithdrawalsEnabled: Boolean(setRes.is_withdrawals_enabled)
@@ -162,27 +173,35 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       if (wdrRes.data && !wdrRes.error) {
         setAllWithdrawals(
-          wdrRes.data.map((r: any) => ({
-            id: r.id,
-            requestNumber: r.request_number,
-            affiliateId: r.affiliate_id,
-            amount: Number(r.amount),
-            paymentMethod: r.payment_method,
-            upiId: r.upi_id,
-            accountHolderName: r.account_holder_name,
-            bankAccountNumber: r.bank_account_number,
-            ifscCode: r.ifsc_code,
-            bankName: r.bank_name,
-            status: r.status,
-            adminRemarks: r.admin_remarks,
-            rejectionReason: r.rejection_reason,
-            transactionReference: r.transaction_reference,
-            paymentProofUrl: r.payment_proof_url,
-            processedBy: r.processed_by,
-            processedAt: r.processed_at,
-            createdAt: r.created_at,
-            updatedAt: r.updated_at
-          }))
+          wdrRes.data.map((r: any) => {
+            const amt = Number(r.amount);
+            const feePct = Number(r.platform_fee_pct ?? resolvedFeePct ?? 5);
+            const calc = calculateWithdrawalBreakdown(amt, feePct);
+            return {
+              id: r.id,
+              requestNumber: r.request_number,
+              affiliateId: r.affiliate_id,
+              amount: amt,
+              platformFeePct: feePct,
+              platformFeeAmount: r.platform_fee_amount !== undefined && r.platform_fee_amount !== null ? Number(r.platform_fee_amount) : calc.feeAmount,
+              netPayableAmount: r.net_payable_amount !== undefined && r.net_payable_amount !== null && Number(r.net_payable_amount) > 0 ? Number(r.net_payable_amount) : calc.netPayable,
+              paymentMethod: r.payment_method,
+              upiId: r.upi_id,
+              accountHolderName: r.account_holder_name,
+              bankAccountNumber: r.bank_account_number,
+              ifscCode: r.ifsc_code,
+              bankName: r.bank_name,
+              status: r.status,
+              adminRemarks: r.admin_remarks,
+              rejectionReason: r.rejection_reason,
+              transactionReference: r.transaction_reference,
+              paymentProofUrl: r.payment_proof_url,
+              processedBy: r.processed_by,
+              processedAt: r.processed_at,
+              createdAt: r.created_at,
+              updatedAt: r.updated_at
+            };
+          })
         );
       }
 
@@ -304,6 +323,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const reqNumber = `WDR-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
     const nowIso = new Date().toISOString();
+    const feeBreakdown = calculateWithdrawalBreakdown(amt, settings.withdrawalFeePercentage ?? 5);
 
     const newRequest: WithdrawalRequest = {
       id: `wdr-${Date.now()}`,
@@ -311,7 +331,10 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       affiliateId: user.id,
       affiliateEmail: user.email,
       affiliateName: user.user_metadata?.full_name || user.email?.split('@')[0],
-      amount: amt,
+      amount: feeBreakdown.grossAmount,
+      platformFeePct: feeBreakdown.feePct,
+      platformFeeAmount: feeBreakdown.feeAmount,
+      netPayableAmount: feeBreakdown.netPayable,
       paymentMethod: input.paymentMethod,
       upiId: input.paymentMethod === 'upi' ? input.upiId?.trim() : undefined,
       accountHolderName: input.paymentMethod === 'bank_transfer' ? input.accountHolderName?.trim() : undefined,
@@ -327,31 +350,46 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       id: `led-${Date.now()}`,
       affiliateId: user.id,
       entryType: 'withdrawal_reserved',
-      amount: amt,
-      balanceAfter: Math.max(0, wallet.availableBalance - amt),
+      amount: feeBreakdown.grossAmount,
+      balanceAfter: Math.max(0, wallet.availableBalance - feeBreakdown.grossAmount),
       referenceType: 'withdrawal_request',
       referenceId: reqNumber,
-      description: `Funds reserved for Withdrawal Request #${reqNumber} (${input.paymentMethod.toUpperCase()})`,
+      description: `Reserved ₹${feeBreakdown.grossAmount} for Payout #${reqNumber} (${feeBreakdown.feePct}% fee: ₹${feeBreakdown.feeAmount}, Net Payable: ₹${feeBreakdown.netPayable})`,
       createdAt: nowIso
     };
 
     try {
-      const { data: insertedReq, error: wdrErr } = await supabase
+      const insertPayload: any = {
+        request_number: reqNumber,
+        affiliate_id: user.id,
+        amount: feeBreakdown.grossAmount,
+        platform_fee_pct: feeBreakdown.feePct,
+        platform_fee_amount: feeBreakdown.feeAmount,
+        net_payable_amount: feeBreakdown.netPayable,
+        payment_method: input.paymentMethod,
+        upi_id: newRequest.upiId,
+        account_holder_name: newRequest.accountHolderName,
+        bank_account_number: newRequest.bankAccountNumber,
+        ifsc_code: newRequest.ifscCode,
+        bank_name: newRequest.bankName,
+        status: 'pending'
+      };
+
+      let { data: insertedReq, error: wdrErr } = await supabase
         .from('withdrawal_requests')
-        .insert({
-          request_number: reqNumber,
-          affiliate_id: user.id,
-          amount: amt,
-          payment_method: input.paymentMethod,
-          upi_id: newRequest.upiId,
-          account_holder_name: newRequest.accountHolderName,
-          bank_account_number: newRequest.bankAccountNumber,
-          ifsc_code: newRequest.ifscCode,
-          bank_name: newRequest.bankName,
-          status: 'pending'
-        })
+        .insert(insertPayload)
         .select()
         .single();
+
+      if (wdrErr && wdrErr.message?.includes('platform_fee')) {
+        // Fallback if phase 9 columns aren't migrated yet
+        delete insertPayload.platform_fee_pct;
+        delete insertPayload.platform_fee_amount;
+        delete insertPayload.net_payable_amount;
+        const retry = await supabase.from('withdrawal_requests').insert(insertPayload).select().single();
+        insertedReq = retry.data;
+        wdrErr = retry.error;
+      }
 
       if (wdrErr) return { success: false, error: wdrErr.message };
       if (insertedReq) newRequest.id = insertedReq.id;
@@ -359,7 +397,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       await supabase.from('wallet_ledger').insert({
         affiliate_id: user.id,
         entry_type: 'withdrawal_reserved',
-        amount: amt,
+        amount: feeBreakdown.grossAmount,
         balance_after: ledgerEntry.balanceAfter,
         reference_type: 'withdrawal_request',
         reference_id: reqNumber,
@@ -461,6 +499,22 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             description: ledgerDelta.description
           });
         }
+
+        // Record ClickBarry 5% platform fee entry when payout is completed
+        if (input.status === 'paid' && target.platformFeeAmount > 0) {
+          try {
+            await supabase.from('platform_fees').insert({
+              source_type: 'affiliate_withdrawal_fee',
+              reference_id: target.requestNumber,
+              user_id: target.affiliateId,
+              gross_amount: target.amount,
+              fee_percentage: target.platformFeePct || 5,
+              fee_amount: target.platformFeeAmount,
+              net_amount: target.netPayableAmount,
+              notes: `5% Withdrawal fee on Payout #${target.requestNumber} (UTR: ${input.transactionReference})`
+            });
+          } catch {}
+        }
       } catch (err: any) {
         return { success: false, error: err?.message || 'Failed to update payout' };
       }
@@ -484,6 +538,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           id: 'default',
           min_withdrawal_amount: merged.minWithdrawalAmount,
           max_withdrawal_amount: merged.maxWithdrawalAmount,
+          withdrawal_fee_percentage: merged.withdrawalFeePercentage ?? 5,
           allowed_payment_methods: merged.allowedPaymentMethods,
           processing_info: merged.processingInfo,
           is_withdrawals_enabled: merged.isWithdrawalsEnabled,

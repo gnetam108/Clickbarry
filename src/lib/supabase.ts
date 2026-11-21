@@ -100,7 +100,8 @@ function createSafeSupabaseClient(): SupabaseClient | null {
     return createClient(validSupabaseUrl, validSupabaseAnonKey, {
       auth: {
         persistSession: true,
-        autoRefreshToken: true
+        autoRefreshToken: true,
+        detectSessionInUrl: true
       }
     });
   } catch (err) {

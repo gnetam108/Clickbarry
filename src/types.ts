@@ -1,5 +1,7 @@
 export type UserRole = 'affiliate' | 'seller' | 'admin';
 
+export type MembershipStatus = 'none' | 'pending' | 'active' | 'failed' | 'refunded' | 'expired';
+
 export type PageId =
   | 'home'
   | 'marketplace'
@@ -34,7 +36,7 @@ export interface Product {
   categoryLabel: string;
   price: number;
   originalPrice: number;
-  commissionRate: number; // e.g. 40%
+  commissionRate: number; // 30% - 100% (max net-safe depends on seller platform fee)
   rating: number;
   reviewsCount: number;
   salesCount: number;
@@ -134,7 +136,7 @@ export interface CommissionRecord {
   commissionAmount: number;
   networkName: string;
   verificationSource: 'seller_confirmed' | 'network_api' | 'manual_admin';
-  status: 'pending' | 'verified' | 'paid' | 'disputed';
+  status: 'pending' | 'verified' | 'paid' | 'disputed' | 'rejected';
   paidAt?: string;
   notes?: string;
   createdAt: string;
@@ -179,7 +181,10 @@ export interface WithdrawalRequest {
   affiliateId: string;
   affiliateEmail?: string;
   affiliateName?: string;
-  amount: number;
+  amount: number; // Gross amount deducted from Affiliate wallet
+  platformFeePct: number; // Default 5%
+  platformFeeAmount: number; // 0.05 * amount
+  netPayableAmount: number; // 0.95 * amount transferred to Affiliate
   paymentMethod: 'upi' | 'bank_transfer';
   upiId?: string;
   accountHolderName?: string;
@@ -231,6 +236,7 @@ export interface WalletLedgerEntry {
 export interface PayoutSettings {
   minWithdrawalAmount: number;
   maxWithdrawalAmount: number;
+  withdrawalFeePercentage: number; // Default 5%
   allowedPaymentMethods: ('upi' | 'bank_transfer')[];
   processingInfo: string;
   isWithdrawalsEnabled: boolean;
@@ -251,7 +257,7 @@ export interface WalletNotification {
 }
 
 // ============================================================================
-// PHASE 6: SUPER ADMIN & PLATFORM MANAGEMENT TYPES
+// PHASE 6 & 9: SUPER ADMIN, PLATFORM FEES, REFERRALS & REPORTS TYPES
 // ============================================================================
 
 export type AdminRole = 'super_admin' | 'admin' | 'moderator';
@@ -266,8 +272,10 @@ export interface AdminUserRecord {
   adminRole?: AdminRole;
   status: UserStatus;
   sellerVerified: boolean;
-  subscriptionStatus: 'active' | 'none' | 'pending';
+  subscriptionStatus: MembershipStatus;
   subscriptionPrice?: number;
+  referralCode?: string;
+  referredBy?: string;
   totalProductsCount: number;
   totalClicksCount: number;
   totalSalesCount: number;
@@ -281,7 +289,7 @@ export interface AdminAuditLog {
   id: string;
   adminEmail: string;
   action: string;
-  targetType: 'user' | 'seller' | 'affiliate' | 'product' | 'withdrawal' | 'settings' | 'category' | 'security';
+  targetType: 'user' | 'seller' | 'affiliate' | 'product' | 'withdrawal' | 'settings' | 'category' | 'security' | 'report' | 'referral';
   targetId: string;
   details: string;
   timestamp: string;
@@ -315,8 +323,14 @@ export interface PlatformWebsiteSettings {
   currencySymbol: string;
   minWithdrawalAmount: number;
   maxWithdrawalAmount: number;
-  sellerSubscriptionPrice: number;
-  platformFeePercentage: number;
+  withdrawalFeePercentage: number; // Default 5%
+  sellerSubscriptionPrice: number; // ₹999
+  platformFeePercentage: number; // Default 15% seller platform fee
+  affiliateCommissionMin: number; // Default 30%
+  affiliateCommissionMax: number; // Default 100%
+  referralCommissionPercentage: number; // Default 10%
+  sellerReferralBonus: number; // Default ₹100
+  referralRevenueBasis: 'net_earnings' | 'platform_revenue';
   featuredProductIds: string[];
   bannerAnnouncement?: string;
   isRegistrationOpen: boolean;
@@ -328,21 +342,20 @@ export type DateFilterPeriod = 'today' | '7d' | '30d' | 'this_month' | 'this_yea
 
 export interface FinancialReconciliationReport {
   period: string;
-  sellerSubscriptionRevenue: number; // ₹999 * paid sellers (Direct ClickBarry revenue)
-  platformFees: number; // Fees on seller transactions if configured
+  sellerSubscriptionRevenue: number; // ₹999 * paid active sellers
+  sellerSaleFees: number; // 15% Seller sale fees
+  affiliateWithdrawalFees: number; // 5% Affiliate withdrawal fees
+  platformFees: number; // Total sellerSaleFees + affiliateWithdrawalFees
+  referralEarnings: number; // Total approved/paid referral commissions + bonuses
   verifiedSellerCommission: number; // Total commissions earned by affiliates from verified sellers
-  externalNetworkCommission: number; // Reported for Amazon/ClickBank (NOT ClickBarry controlled funds)
-  totalAffiliateWithdrawalRequests: number; // Total volume requested
-  actualAffiliatePayouts: number; // Paid volume (settled by Admin with UTR)
+  externalNetworkCommission: number; // External networks
+  totalAffiliateWithdrawalRequests: number; // Gross volume requested
+  actualAffiliatePayouts: number; // Net paid volume settled by Admin with UTR
   pendingWithdrawalsVolume: number; // Pending/Processing volume
-  refundsAndReversals: number; // Reversals
-  actualPlatformNetRevenue: number; // Net revenue retained by ClickBarry
+  refundsAndReversals: number; // Reversals/Refunds
+  actualPlatformNetRevenue: number; // Subscription + Platform Fees - Referral Payouts - Refunds
   reconciliationStatus: 'balanced' | 'discrepancy';
 }
-
-// ============================================================================
-// PAYU LIFETIME SELLER MEMBERSHIP (₹999) TYPES
-// ============================================================================
 
 export interface SellerMembershipPayment {
   id: string;
@@ -350,14 +363,133 @@ export interface SellerMembershipPayment {
   sellerEmail: string;
   sellerName?: string;
   txnid: string;
-  payuId?: string; // mihpayid
+  payuId?: string;
+  gatewayOrderId?: string;
+  gatewayPaymentId?: string;
   amount: number; // 999.00
   currency: string;
-  status: 'pending' | 'success' | 'failed' | 'cancelled';
+  status: 'pending' | 'success' | 'failed' | 'cancelled' | 'refunded';
   paymentMode?: string;
   bankRefNum?: string;
   hashVerified: boolean;
   membershipActivatedAt?: string;
+  refundedAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface SaleRecord {
+  id: string;
+  productId?: string;
+  sellerId: string;
+  affiliateId?: string;
+  trackingSlug?: string;
+  orderReference: string;
+  buyerEmail?: string;
+  saleAmount: number;
+  affiliateCommissionRate: number;
+  affiliateCommissionAmount: number;
+  platformFeePct: number;
+  platformFeeAmount: number;
+  sellerNetAmount: number;
+  status: 'pending' | 'verified' | 'refunded' | 'disputed';
+  verifiedAt?: string;
+  createdAt: string;
+}
+
+export interface PlatformFeeRecord {
+  id: string;
+  sourceType: 'seller_sale_fee' | 'affiliate_withdrawal_fee';
+  referenceId: string;
+  userId?: string;
+  grossAmount: number;
+  feePercentage: number;
+  feeAmount: number;
+  netAmount: number;
+  notes?: string;
+  createdAt: string;
+}
+
+export type ReferralBonusStatus = 'credited' | 'pending_pass' | 'failed_pass' | 'reversed' | 'not_applicable';
+
+export interface ReferralRecord {
+  id: string;
+  referrerId: string;
+  referrerName?: string;
+  referrerEmail?: string;
+  referrerCode?: string;
+  referredUserId: string;
+  referredEmail?: string;
+  referredName?: string;
+  referredRole?: UserRole;
+  referredSubscriptionStatus?: MembershipStatus;
+  referralCodeUsed: string;
+  referralType: 'affiliate' | 'seller';
+  status: 'pending' | 'active' | 'blocked';
+  bonusStatus?: ReferralBonusStatus;
+  bonusAmount?: number;
+  lifetimeCommissionTotal?: number;
+  blockReason?: string;
+  createdAt: string;
+}
+
+export interface ReferralCommissionRecord {
+  id: string;
+  referrerId: string;
+  referrerName?: string;
+  referrerEmail?: string;
+  referredUserId: string;
+  referredName?: string;
+  referredEmail?: string;
+  referralId?: string;
+  rewardType: 'one_time_bonus' | 'lifetime_commission';
+  sourceType?: 'seller_pass' | 'affiliate_net_earning' | 'seller_net_earning' | 'manual_adjustment';
+  sourceTransactionId?: string;
+  grossReferenceAmount?: number;
+  deductionsAmount?: number;
+  baseAmount: number;
+  commissionRate: number;
+  rewardAmount: number;
+  status: 'pending' | 'approved' | 'paid' | 'reversed';
+  reversalReason?: string;
+  reversedAt?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface ReferralFraudLogRecord {
+  id: string;
+  userId?: string;
+  userEmail?: string;
+  referrerId?: string;
+  referrerEmail?: string;
+  attemptedCode?: string;
+  eventType:
+    | 'self_referral_blocked'
+    | 'duplicate_referral_blocked'
+    | 'immutable_referrer_tamper'
+    | 'invalid_referral_code'
+    | 'suspended_referrer_blocked'
+    | 'commission_reversed'
+    | 'referral_blocked_by_admin'
+    | 'rapid_referral_anomaly';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  details: string;
+  resolved: boolean;
+  createdAt: string;
+}
+
+export interface ProductReportRecord {
+  id: string;
+  productId: string;
+  productTitle?: string;
+  reporterId: string;
+  reporterEmail?: string;
+  reason: string;
+  details?: string;
+  status: 'open' | 'investigating' | 'resolved' | 'dismissed';
+  adminNotes?: string;
+  resolvedBy?: string;
   createdAt: string;
   updatedAt?: string;
 }

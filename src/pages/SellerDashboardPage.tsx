@@ -4,6 +4,8 @@ import { useProducts, SellerAnalytics } from '../context/ProductContext';
 import { useAuth } from '../context/AuthContext';
 import { useHybridAffiliate, SellerActivitySummary } from '../context/HybridAffiliateContext';
 import { usePayUMembership } from '../context/PayUMembershipContext';
+import { useReferrals } from '../context/ReferralContext';
+import { calculateSellerSaleBreakdown } from '../lib/fees';
 import sellerLaptopImage from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
 import {
   LayoutDashboard,
@@ -30,7 +32,12 @@ import {
   X,
   TrendingUp,
   ExternalLink,
-  AlertTriangle
+  AlertTriangle,
+  Wallet,
+  Gift,
+  Copy,
+  Check,
+  ShoppingBag
 } from 'lucide-react';
 
 interface SellerDashboardPageProps {
@@ -47,8 +54,10 @@ type SellerTab =
   | 'performance'
   | 'affiliate-activity'
   | 'sales'
-  | 'profile'
-  | 'membership';
+  | 'revenue'
+  | 'referrals'
+  | 'membership'
+  | 'profile';
 
 export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
   onNavigate,
@@ -57,9 +66,10 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
   onOpenAddModal,
   onOpenEditModal
 }) => {
-  const { user, profile, role, isLoading: isAuthLoading, signOut } = useAuth();
+  const { user, profile, role, isAdmin, isLoading: isAuthLoading, signOut } = useAuth();
   const {
     sellerProducts,
+    sellerPlatformFeePct,
     fetchSellerProducts,
     fetchSellerAnalytics,
     deleteProduct,
@@ -68,10 +78,27 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
   const { fetchSellerActivity } = useHybridAffiliate();
   const {
     isLifetimeSeller,
+    membershipStatus,
+    membershipStatusLabel,
     isPaymentGatewayEnabled,
     membershipPayment,
     openCheckout
   } = usePayUMembership();
+  const {
+    myReferralCode,
+    myReferralLink,
+    myReferrals,
+    referredSellers,
+    totalReferredAffiliates,
+    totalReferredSellers,
+    myReferralCommissions,
+    totalReferralEarnings,
+    pendingReferralEarnings,
+    approvedReferralEarnings,
+    sellerBonusEarnedCount,
+    sellerBonusPendingCount,
+    refreshReferrals
+  } = useReferrals();
 
   const [activeTab, setActiveTab] = useState<SellerTab>('overview');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -80,6 +107,7 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
+  const [copiedRefLink, setCopiedRefLink] = useState(false);
 
   const [analytics, setAnalytics] = useState<SellerAnalytics>({
     totalProducts: 0,
@@ -146,6 +174,26 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
       .filter((c) => c.status === 'verified' || c.status === 'paid')
       .reduce((sum, c) => sum + c.commissionAmount, 0);
   }, [activity.commissions]);
+
+  const revenueSummary = useMemo(() => {
+    const feePct = sellerPlatformFeePct || 15;
+    const verifiedSales = activity.commissions.filter(
+      (c) => c.status === 'verified' || c.status === 'paid'
+    );
+    const totalPlatformFee = verifiedSales.reduce(
+      (sum, c) => sum + Number((c.saleAmount * (feePct / 100)).toFixed(2)),
+      0
+    );
+    const netSellerRevenue = Number(
+      Math.max(0, totalSalesAmount - totalAffiliatePayoutsOwed - totalPlatformFee).toFixed(2)
+    );
+    return {
+      feePct,
+      totalPlatformFee,
+      netSellerRevenue,
+      verifiedCount: verifiedSales.length
+    };
+  }, [activity.commissions, sellerPlatformFeePct, totalSalesAmount, totalAffiliatePayoutsOwed]);
 
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
@@ -242,6 +290,92 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
     );
   }
 
+  // Gate 3: Hard Membership Lock for Sellers without verified Active ₹999 Lifetime Pass
+  if (!isLifetimeSeller && !isAdmin) {
+    const badgeClasses =
+      membershipStatus === 'failed'
+        ? 'bg-red-500/20 text-red-300 border-red-500/40'
+        : membershipStatus === 'refunded'
+        ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+        : 'bg-amber-500/20 text-amber-300 border-amber-500/40';
+
+    return (
+      <div className="min-h-[82vh] bg-[#0c0722] flex items-center justify-center px-4 py-14">
+        <div className="max-w-lg w-full bg-[#140b33] border border-pink-500/40 rounded-3xl p-7 sm:p-9 space-y-6 shadow-2xl">
+          <div className="flex items-start justify-between gap-4">
+            <div className="w-14 h-14 rounded-2xl bg-pink-500/20 border border-pink-500/40 flex items-center justify-center text-pink-400 shrink-0">
+              <Lock className="w-7 h-7" />
+            </div>
+            <span className={`px-3 py-1 rounded-full text-xs font-extrabold border ${badgeClasses}`}>
+              Status: {membershipStatusLabel}
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-pink-400">
+              Seller Dashboard Locked
+            </span>
+            <h1 className="text-2xl sm:text-3xl font-black text-white leading-tight">
+              ₹999 One-Time Lifetime Seller Pass Required
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              Pay ₹999 once for permanent lifetime Seller access on ClickBarry—zero monthly fees, zero renewal fees. Seller tools, product submissions, and revenue analytics unlock strictly after payment verification.
+            </p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-[#1b1046] border border-purple-800/70 space-y-2 text-xs">
+            <div className="flex justify-between">
+              <span className="text-slate-400">Account Email</span>
+              <span className="font-mono text-white font-semibold">{user.email}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Membership Status</span>
+              <span className="font-bold text-amber-300">{membershipStatusLabel}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Product Publishing</span>
+              <span className="font-bold text-red-300">Locked until payment verified</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Marketplace Access</span>
+              <span className="font-bold text-emerald-400">Open (Browse Products Anytime)</span>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <button
+              onClick={openCheckout}
+              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-pink-500 via-rose-500 to-pink-600 hover:from-pink-600 hover:to-rose-700 text-white font-extrabold text-sm shadow-lg shadow-pink-600/30 flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <CreditCard className="w-4 h-4" />
+              <span>Complete ₹999 Lifetime Pass</span>
+            </button>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => onNavigate('marketplace')}
+                className="py-2.5 px-3 rounded-xl bg-[#1d1245] hover:bg-[#2a1a62] text-slate-200 border border-purple-800 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <ShoppingBag className="w-3.5 h-3.5 text-pink-400" />
+                <span>Browse Marketplace</span>
+              </button>
+              <button
+                onClick={async () => {
+                  await signOut();
+                  onNavigate('home');
+                }}
+                className="py-2.5 px-3 rounded-xl bg-red-950/40 hover:bg-red-900/50 text-red-300 border border-red-800/60 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Logout</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const sellerDisplayName =
     profile?.full_name || user.user_metadata?.full_name || user.email?.split('@')[0] || 'Seller';
 
@@ -251,7 +385,9 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
     { id: 'performance', label: 'Product Performance', icon: BarChart3 },
     { id: 'affiliate-activity', label: 'Affiliate Activity', icon: Link2, badge: activity.links.length },
     { id: 'sales', label: 'Sales', icon: DollarSign, badge: activity.commissions.length },
+    { id: 'revenue', label: 'Revenue (15% Fee)', icon: Wallet },
     { id: 'membership', label: 'Membership', icon: CreditCard },
+    { id: 'referrals', label: 'Referral Earnings', icon: Gift, badge: myReferrals.length },
     { id: 'profile', label: 'Profile', icon: User }
   ];
 
@@ -793,6 +929,92 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
           </div>
         )}
 
+        {/* REVENUE & 15% PLATFORM FEE TAB */}
+        {activeTab === 'revenue' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs font-bold text-slate-400 uppercase">Gross Verified Sales</span>
+                <p className="text-2xl font-black text-white mt-1 tabular-nums">
+                  ₹{totalSalesAmount.toLocaleString()}
+                </p>
+                <span className="text-[11px] text-slate-400">{revenueSummary.verifiedCount} verified orders</span>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs font-bold text-slate-400 uppercase">Affiliate Commissions</span>
+                <p className="text-2xl font-black text-pink-300 mt-1 tabular-nums">
+                  -₹{totalAffiliatePayoutsOwed.toLocaleString()}
+                </p>
+                <span className="text-[11px] text-slate-400">Paid to promoting affiliates</span>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-amber-500/40">
+                <span className="text-xs font-bold text-amber-300 uppercase">
+                  ClickBarry Fee ({revenueSummary.feePct}%)
+                </span>
+                <p className="text-2xl font-black text-amber-400 mt-1 tabular-nums">
+                  -₹{revenueSummary.totalPlatformFee.toLocaleString()}
+                </p>
+                <span className="text-[11px] text-slate-400">Flat {revenueSummary.feePct}% per sale</span>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-emerald-500/40">
+                <span className="text-xs font-bold text-emerald-300 uppercase">Your Seller Net</span>
+                <p className="text-2xl font-black text-emerald-400 mt-1 tabular-nums">
+                  ₹{revenueSummary.netSellerRevenue.toLocaleString()}
+                </p>
+                <span className="text-[11px] text-slate-400">Price − Affiliate − {revenueSummary.feePct}% Fee</span>
+              </div>
+            </div>
+
+            <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-6 space-y-4">
+              <div>
+                <h3 className="font-bold text-base text-white">Per-Product Net Revenue Breakdown</h3>
+                <p className="text-xs text-slate-400">
+                  Live unit economics per sale after deducting your affiliate commission % and ClickBarry&apos;s {revenueSummary.feePct}% platform fee.
+                </p>
+              </div>
+              {sellerProducts.length === 0 ? (
+                <p className="text-xs text-slate-400 py-8 text-center">No products submitted yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                      <tr>
+                        <th className="py-3 px-4">Product</th>
+                        <th className="py-3 px-4">Price</th>
+                        <th className="py-3 px-4">Affiliate ({`% / ₹`})</th>
+                        <th className="py-3 px-4">Platform Fee ({revenueSummary.feePct}%)</th>
+                        <th className="py-3 px-4 text-right">Seller Net / Sale</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-purple-900/40">
+                      {sellerProducts.map((prod) => {
+                        const split = calculateSellerSaleBreakdown(
+                          prod.price,
+                          prod.commissionRate || 30,
+                          revenueSummary.feePct
+                        );
+                        return (
+                          <tr key={prod.id}>
+                            <td className="py-3 px-4 font-bold text-white">{prod.title}</td>
+                            <td className="py-3 px-4 text-white">₹{prod.price.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-pink-300">
+                              {prod.commissionRate}% (₹{split.affiliateCommission.toFixed(0)})
+                            </td>
+                            <td className="py-3 px-4 text-amber-300">₹{split.platformFee.toFixed(0)}</td>
+                            <td className="py-3 px-4 text-right font-extrabold text-emerald-400">
+                              ₹{split.sellerNet.toFixed(0)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* MEMBERSHIP TAB */}
         {activeTab === 'membership' && (
           <div className="max-w-2xl bg-[#140b33] rounded-2xl border border-purple-900/60 p-6 sm:p-8 space-y-5">
@@ -804,13 +1026,17 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
                 </p>
               </div>
               <span
-                className={`px-3 py-1 rounded-full text-xs font-extrabold ${
+                className={`px-3 py-1 rounded-full text-xs font-extrabold border ${
                   isLifetimeSeller
-                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : membershipStatus === 'failed'
+                    ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                    : membershipStatus === 'refunded'
+                    ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                    : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                 }`}
               >
-                {isLifetimeSeller ? 'LIFETIME ACTIVE' : 'INACTIVE'}
+                {membershipStatusLabel}
               </span>
             </div>
 
@@ -838,17 +1064,274 @@ export const SellerDashboardPage: React.FC<SellerDashboardPageProps> = ({
                   <span>
                     {isPaymentGatewayEnabled
                       ? 'Activate your ₹999 Lifetime Seller Membership via PayU Hosted Checkout.'
-                      : 'PayU Checkout is temporarily disabled pending server verification setup. You can still preview checkout details or submit products for Admin review.'}
+                      : 'PayU Checkout is temporarily disabled pending server verification setup. Product submission remains locked until verification completes.'}
                   </span>
                 </div>
                 <button
                   onClick={openCheckout}
                   className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-pink-500 to-rose-600 text-white text-xs font-bold cursor-pointer"
                 >
-                  View ₹999 Lifetime Pass Details
+                  Complete ₹999 Lifetime Pass
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* REFERRAL EARNINGS TAB */}
+        {activeTab === 'referrals' && (
+          <div className="space-y-6">
+            <div className="bg-gradient-to-r from-pink-950/60 via-purple-950/60 to-indigo-950/60 rounded-2xl border border-pink-500/40 p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-pink-300">
+                    ClickBarry Partner Referral Program
+                  </span>
+                  <h2 className="text-xl font-black text-white mt-0.5">
+                    My Referral Link — Earn ₹100 Seller Bonus + 10% Lifetime (Net Earnings)
+                  </h2>
+                  <p className="text-xs text-slate-300 mt-1">
+                    Earn a <strong>one-time ₹100 bonus</strong> only after your referred Seller&apos;s ₹999 Lifetime Pass payment is verified active, plus <strong>10% lifetime commission</strong> strictly on referred Sellers&apos; and Affiliates&apos; eligible <strong>net earnings</strong> after platform deductions. Failed or refunded transactions never earn rewards.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-3 py-1 rounded-full bg-purple-950 border border-purple-700 text-xs font-mono text-pink-300 font-bold">
+                    Code: {myReferralCode || '—'}
+                  </span>
+                  <button
+                    onClick={() => refreshReferrals()}
+                    className="p-2 rounded-xl bg-purple-950 border border-purple-700 text-slate-300 hover:text-white cursor-pointer"
+                    title="Refresh Referral Data"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-300 block">
+                  My Referral Link
+                </label>
+                <div className="flex items-center gap-2 bg-black/40 p-2.5 rounded-xl border border-purple-800/60">
+                  <input
+                    type="text"
+                    readOnly
+                    value={myReferralLink}
+                    className="bg-transparent text-xs text-pink-200 font-mono flex-1 outline-none truncate"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!myReferralLink) return;
+                      try {
+                        await navigator.clipboard.writeText(myReferralLink);
+                        setCopiedRefLink(true);
+                        showToast('Referral link copied!', 'success');
+                        setTimeout(() => setCopiedRefLink(false), 2000);
+                      } catch {}
+                    }}
+                    className="px-4 py-1.5 rounded-lg bg-pink-600 hover:bg-pink-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    {copiedRefLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedRefLink ? 'Copied!' : 'Copy Referral Link'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">Referred Sellers</span>
+                <p className="text-2xl font-black text-pink-300 mt-1">{totalReferredSellers}</p>
+                <span className="text-[10px] text-slate-400">
+                  + {totalReferredAffiliates} referred affiliates
+                </span>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">₹100 Bonus Status</span>
+                <p className="text-2xl font-black text-emerald-400 mt-1">
+                  ₹{(sellerBonusEarnedCount * 100).toLocaleString()}
+                </p>
+                <span className="text-[10px] text-slate-300">
+                  {sellerBonusEarnedCount} Credited • {sellerBonusPendingCount} Pending ₹999 Pass
+                </span>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">Lifetime Referral Earnings</span>
+                <p className="text-2xl font-black text-emerald-300 mt-1">
+                  ₹{totalReferralEarnings.toLocaleString()}
+                </p>
+                <span className="text-[10px] text-slate-400">
+                  Approved: ₹{approvedReferralEarnings.toLocaleString()}
+                </span>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">Pending Referral Commission</span>
+                <p className="text-2xl font-black text-amber-400 mt-1">
+                  ₹{pendingReferralEarnings.toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-sm text-white">
+                  Referred Sellers &amp; Partners ({myReferrals.length})
+                </h3>
+                <span className="text-[11px] text-slate-400">
+                  {referredSellers.length} Sellers • {totalReferredAffiliates} Affiliates
+                </span>
+              </div>
+              {myReferrals.length === 0 ? (
+                <p className="text-xs text-slate-400 py-8 text-center">
+                  No referred Sellers or Affiliates yet. Share your link above!
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                      <tr>
+                        <th className="py-2.5 px-3">Referred Partner</th>
+                        <th className="py-2.5 px-3">Type</th>
+                        <th className="py-2.5 px-3">₹999 Pass Status</th>
+                        <th className="py-2.5 px-3">₹100 Bonus Status</th>
+                        <th className="py-2.5 px-3">10% Lifetime Earned</th>
+                        <th className="py-2.5 px-3">Joined</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-purple-900/40">
+                      {myReferrals.map((r) => (
+                        <tr key={r.id}>
+                          <td className="py-3 px-3">
+                            <span className="font-bold text-white block">
+                              {r.referredName || `Partner ${r.referredUserId.slice(0, 8)}`}
+                            </span>
+                            {r.referredEmail && (
+                              <span className="text-[10px] text-slate-400 font-mono">{r.referredEmail}</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                r.referralType === 'seller'
+                                  ? 'bg-pink-500/20 text-pink-300'
+                                  : 'bg-indigo-500/20 text-indigo-300'
+                              }`}
+                            >
+                              {r.referralType}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 uppercase font-semibold text-slate-300">
+                            {r.referralType === 'seller'
+                              ? r.referredSubscriptionStatus || 'pending'
+                              : 'Free Affiliate'}
+                          </td>
+                          <td className="py-3 px-3">
+                            {r.referralType === 'seller' ? (
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  r.bonusStatus === 'credited'
+                                    ? 'bg-emerald-500/20 text-emerald-300'
+                                    : r.bonusStatus === 'reversed' || r.bonusStatus === 'failed_pass'
+                                    ? 'bg-red-500/20 text-red-300'
+                                    : 'bg-amber-500/20 text-amber-300'
+                                }`}
+                              >
+                                {r.bonusStatus === 'credited'
+                                  ? '₹100 Credited'
+                                  : r.bonusStatus === 'reversed'
+                                  ? 'Reversed'
+                                  : r.bonusStatus === 'failed_pass'
+                                  ? 'Pass Failed'
+                                  : 'Pending ₹999 Pass'}
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-slate-500">N/A</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 font-bold text-emerald-400">
+                            ₹{(r.lifetimeCommissionTotal || 0).toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3 text-slate-400">
+                            {new Date(r.createdAt).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-sm text-white">Referral History</h3>
+                <span className="text-[11px] text-slate-400">
+                  10% calculated on net earnings after fees &amp; commissions
+                </span>
+              </div>
+              {myReferralCommissions.length === 0 ? (
+                <p className="text-xs text-slate-400 py-8 text-center">No referral rewards earned yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                      <tr>
+                        <th className="py-2.5 px-3">Date</th>
+                        <th className="py-2.5 px-3">Reward Type</th>
+                        <th className="py-2.5 px-3">Net Base</th>
+                        <th className="py-2.5 px-3">Rate</th>
+                        <th className="py-2.5 px-3">Earned</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-purple-900/40">
+                      {myReferralCommissions.map((rc) => (
+                        <tr key={rc.id}>
+                          <td className="py-3 px-3 text-slate-400">
+                            {new Date(rc.createdAt).toLocaleDateString()}
+                          </td>
+                          <td className="py-3 px-3 font-semibold text-white">
+                            {rc.rewardType === 'one_time_bonus'
+                              ? '₹100 Seller Pass Bonus'
+                              : '10% Lifetime Net Commission'}
+                          </td>
+                          <td className="py-3 px-3 text-slate-300 font-mono">
+                            ₹{rc.baseAmount.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3 text-slate-300">
+                            {rc.rewardType === 'one_time_bonus' ? 'One-Time' : `${rc.commissionRate}%`}
+                          </td>
+                          <td
+                            className={`py-3 px-3 font-bold ${
+                              rc.status === 'reversed' ? 'text-red-400 line-through' : 'text-emerald-400'
+                            }`}
+                          >
+                            +₹{rc.rewardAmount.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3">
+                            <span
+                              className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${
+                                rc.status === 'approved' || rc.status === 'paid'
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : rc.status === 'reversed'
+                                  ? 'bg-red-500/20 text-red-300'
+                                  : 'bg-amber-500/20 text-amber-300'
+                              }`}
+                            >
+                              {rc.status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-slate-400 text-[11px]">
+                            {rc.reversalReason || rc.notes || '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

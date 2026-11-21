@@ -1,11 +1,21 @@
-import React, { useState, useMemo } from 'react';
-import { PageId, Product, ExternalAffiliateProduct, WithdrawalRequest, AdminUserRecord, PlatformCategory } from '../types';
+import React, { useState, useMemo, useEffect } from 'react';
+import {
+  PageId,
+  Product,
+  WithdrawalRequest,
+  AdminUserRecord,
+  PlatformCategory,
+  MembershipStatus,
+  ProductReportRecord
+} from '../types';
 import { useAdmin } from '../context/AdminContext';
 import { useProducts } from '../context/ProductContext';
 import { useHybridAffiliate } from '../context/HybridAffiliateContext';
 import { useWallet } from '../context/WalletContext';
 import { useAuth } from '../context/AuthContext';
 import { usePayUMembership } from '../context/PayUMembershipContext';
+import { useReferrals } from '../context/ReferralContext';
+import { calculateWithdrawalBreakdown } from '../lib/fees';
 import { AdminProcessPayoutModal } from '../components/AdminProcessPayoutModal';
 import defaultProductCover from '../assets/images/seller_dashboard_laptop_1794019709659.jpg';
 import {
@@ -49,7 +59,9 @@ import {
   Sliders,
   BadgeCheck,
   Radio,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Flag,
+  Gift
 } from 'lucide-react';
 
 interface AdminDashboardPageProps {
@@ -65,6 +77,7 @@ type AdminSection =
   | 'products'
   | 'financials'
   | 'withdrawals'
+  | 'referrals'
   | 'categories'
   | 'settings'
   | 'reports'
@@ -92,19 +105,22 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     updateSubscriptionStatus,
     approveProduct,
     rejectProduct,
+    suspendProduct,
     toggleFeaturedProduct,
     deleteProductAdmin,
     addCategory,
     updateCategory,
     deleteCategory,
     updateWebsiteSettings,
+    salesLedger,
+    adminReferralCommissions,
     financialReport,
     exportToCsv,
     refreshAdminData,
     isLoading
   } = useAdmin();
 
-  const { allProducts } = useProducts();
+  const { allProducts, productReports, resolveProductReport, fetchProductReportsAdmin } = useProducts();
   const {
     externalProducts,
     allAffiliateLinks,
@@ -113,6 +129,15 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
   } = useHybridAffiliate();
   const { allWithdrawals } = useWallet();
   const { allMembershipPayments, isPaymentGatewayEnabled } = usePayUMembership();
+  const {
+    allReferrals,
+    allReferralCommissions,
+    fraudLogs,
+    refreshReferrals,
+    adminUpdateReferralCommissionStatus,
+    adminToggleReferralStatus,
+    adminResolveFraudLog
+  } = useReferrals();
 
   // Navigation State
   const [activeSection, setActiveSection] = useState<AdminSection>('overview');
@@ -136,6 +161,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
   const [rejectProductTarget, setRejectProductTarget] = useState<Product | null>(null);
   const [rejectReason, setRejectReason] = useState('Product information or external URL could not be verified.');
+  const [suspendProductTarget, setSuspendProductTarget] = useState<Product | null>(null);
+  const [suspendProductReason, setSuspendProductReason] = useState('Suspended by platform moderation due to policy or link check.');
 
   const [editingCategory, setEditingCategory] = useState<PlatformCategory | null>(null);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -148,28 +175,58 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
   const [deleteProductTarget, setDeleteProductTarget] = useState<Product | null>(null);
   const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<PlatformCategory | null>(null);
 
-  // Settings local form state
+  // Settings local form state (always syncs when settings load from Supabase)
   const [tempSettings, setTempSettings] = useState(settings);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
-  // Date-filtered metrics & real DB KPI Calculations
+  // Referral Management filters & sub-tabs
+  const [referralSubTab, setReferralSubTab] = useState<'all' | 'commissions' | 'fraud' | 'settings'>('all');
+  const [referralSearch, setReferralSearch] = useState('');
+  const [referralTypeFilter, setReferralTypeFilter] = useState<'all' | 'affiliate' | 'seller'>('all');
+  const [referralActionLoadingId, setReferralActionLoadingId] = useState<string | null>(null);
+  const [referralActionFeedback, setReferralActionFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    setTempSettings(settings);
+  }, [settings]);
+
+  useEffect(() => {
+    if (isSuperAdmin && activeSection === 'products') {
+      fetchProductReportsAdmin();
+    }
+  }, [isSuperAdmin, activeSection, fetchProductReportsAdmin]);
+
+  // Date-filtered metrics & 15 real DB KPI Calculations
   const stats = useMemo(() => {
     const datedUsers = users.filter((u) => isInDateRange(u.createdAt));
     const totalUsers = datedUsers.length;
-    const sellers = datedUsers.filter((u) => u.role === 'seller' || u.role === 'both');
+    const sellers = users.filter((u) => u.role === 'seller' || u.role === 'both');
+    const datedSellers = datedUsers.filter((u) => u.role === 'seller' || u.role === 'both');
     const affiliates = datedUsers.filter((u) => u.role === 'affiliate' || u.role === 'both');
     const activeUsers = datedUsers.filter((u) => u.status === 'active').length;
+
+    const activeSellerMemberships = sellers.filter((u) => u.subscriptionStatus === 'active').length;
+    const pendingSellerPayments = sellers.filter(
+      (u) => u.subscriptionStatus === 'pending' || u.subscriptionStatus === 'none' || !u.subscriptionStatus
+    ).length;
+    const failedOrRefundedSellers = sellers.filter(
+      (u) => u.subscriptionStatus === 'failed' || u.subscriptionStatus === 'refunded'
+    ).length;
 
     const datedProducts = allProducts.filter((p) => isInDateRange(p.createdAt));
     const datedExternal = externalProducts.filter((p) => isInDateRange(p.createdAt));
     const totalListed = datedProducts.length + datedExternal.length;
     const pendingProducts = allProducts.filter((p) => p.approvalStatus === 'pending' || p.status === 'draft').length;
+    const approvedProducts = allProducts.filter((p) => p.approvalStatus === 'approved' && p.status === 'published').length;
+    const rejectedProducts = allProducts.filter((p) => p.approvalStatus === 'rejected').length;
 
     const datedClicks = allRecentClicks.filter((c) => isInDateRange(c.createdAt));
     const totalClicks = datedClicks.length;
 
     const datedCommissions = allCommissionRecords.filter((c) => isInDateRange(c.createdAt));
-    const verifiedSales = datedCommissions.filter((c) => c.status === 'verified' || c.status === 'paid').length;
+    const verifiedCommissionCount = datedCommissions.filter((c) => c.status === 'verified' || c.status === 'paid').length;
+    const datedSalesCount = salesLedger.filter((s) => isInDateRange(s.createdAt) && s.status === 'verified').length;
+    const verifiedSales = Math.max(datedSalesCount, verifiedCommissionCount);
 
     const pendingCommissions = datedCommissions
       .filter((c) => c.status === 'pending')
@@ -180,24 +237,59 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
       .reduce((acc, c) => acc + c.commissionAmount, 0);
 
     const datedWithdrawals = allWithdrawals.filter((w) => isInDateRange(w.createdAt));
+    const pendingWithdrawalRows = datedWithdrawals.filter(
+      (w) => w.status === 'pending' || w.status === 'approved' || w.status === 'processing'
+    );
+    const completedWithdrawalRows = datedWithdrawals.filter((w) => w.status === 'paid');
+
+    const pendingWithdrawalsCount = pendingWithdrawalRows.length;
+    const pendingWithdrawalsAmount = pendingWithdrawalRows.reduce((acc, w) => acc + w.amount, 0);
+    const completedWithdrawalsCount = completedWithdrawalRows.length;
+    const completedWithdrawalsAmount = completedWithdrawalRows.reduce((acc, w) => acc + w.amount, 0);
     const totalWithdrawalsAmount = datedWithdrawals.reduce((acc, w) => acc + w.amount, 0);
     const actualPlatformRevenue = financialReport.actualPlatformNetRevenue;
+    const referralEarnings =
+      financialReport.referralEarnings ||
+      adminReferralCommissions
+        .filter((rc) => isInDateRange(rc.createdAt) && rc.status !== 'reversed')
+        .reduce((acc, rc) => acc + rc.rewardAmount, 0);
 
     return {
       totalUsers,
-      totalSellers: sellers.length,
+      totalSellers: datedSellers.length,
       totalAffiliates: affiliates.length,
       activeUsers,
+      activeSellerMemberships,
+      pendingSellerPayments,
+      failedOrRefundedSellers,
       totalListed,
       pendingProducts,
+      approvedProducts,
+      rejectedProducts,
       totalClicks,
       verifiedSales,
       pendingCommissions,
       approvedCommissions,
+      pendingWithdrawalsCount,
+      pendingWithdrawalsAmount,
+      completedWithdrawalsCount,
+      completedWithdrawalsAmount,
       totalWithdrawalsAmount,
-      actualPlatformRevenue
+      actualPlatformRevenue,
+      referralEarnings
     };
-  }, [users, allProducts, externalProducts, allRecentClicks, allCommissionRecords, allWithdrawals, financialReport, isInDateRange]);
+  }, [
+    users,
+    allProducts,
+    externalProducts,
+    allRecentClicks,
+    allCommissionRecords,
+    salesLedger,
+    adminReferralCommissions,
+    allWithdrawals,
+    financialReport,
+    isInDateRange
+  ]);
 
   // Real 7-day click chart buckets derived from database clicks
   const dailyClickBuckets = useMemo(() => {
@@ -311,6 +403,14 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     { id: 'products', label: 'Product Moderation', icon: ShoppingBag, badge: stats.pendingProducts > 0 ? `${stats.pendingProducts} new` : undefined },
     { id: 'financials', label: 'Financial Management', icon: DollarSign },
     { id: 'withdrawals', label: 'Withdrawals & Payouts', icon: Wallet, badge: allWithdrawals.filter((w) => w.status === 'pending').length || undefined },
+    {
+      id: 'referrals',
+      label: 'Referral Management',
+      icon: Gift,
+      badge: fraudLogs.filter((f) => !f.resolved).length > 0
+        ? `${fraudLogs.filter((f) => !f.resolved).length} alert`
+        : allReferrals.length || undefined
+    },
     { id: 'categories', label: 'Category Management', icon: FolderTree, badge: categories.length },
     { id: 'settings', label: 'Website Settings', icon: Settings },
     { id: 'reports', label: 'Reports & Analytics', icon: BarChart3 },
@@ -629,15 +729,15 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                 </div>
               </div>
 
-              {/* 12 Real-Data Overview KPI Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              {/* 15 Real-Data Overview KPI Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Total Registered Users</span>
+                    <span className="text-xs font-semibold">Total Users</span>
                     <Users className="w-4 h-4 text-purple-400" />
                   </div>
                   <div className="text-2xl font-black text-white tabular-nums">{stats.totalUsers}</div>
-                  <div className="text-[11px] text-slate-400 mt-1">All roles combined</div>
+                  <div className="text-[11px] text-slate-400 mt-1">{stats.activeUsers} active accounts</div>
                 </div>
 
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
@@ -658,22 +758,37 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                   <div className="text-[11px] text-indigo-300 mt-1 font-medium">Free affiliate accounts</div>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-emerald-500/40 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Active Users</span>
-                    <TrendingUp className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-semibold">Active Seller Memberships</span>
+                    <BadgeCheck className="w-4 h-4 text-emerald-400" />
                   </div>
-                  <div className="text-2xl font-black text-emerald-400 tabular-nums">{stats.activeUsers}</div>
-                  <div className="text-[11px] text-slate-400 mt-1">Good standing accounts</div>
+                  <div className="text-2xl font-black text-emerald-400 tabular-nums">
+                    {stats.activeSellerMemberships}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">₹999 verified lifetime</div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-amber-500/40 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Pending Seller Payments</span>
+                    <CreditCard className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div className="text-2xl font-black text-amber-400 tabular-nums">
+                    {stats.pendingSellerPayments}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">
+                    {stats.failedOrRefundedSellers} failed / refunded
+                  </div>
                 </div>
 
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Total Listed Products</span>
-                    <ShoppingBag className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-semibold">Total Products</span>
+                    <ShoppingBag className="w-4 h-4 text-cyan-400" />
                   </div>
                   <div className="text-2xl font-black text-white tabular-nums">{stats.totalListed}</div>
-                  <div className="text-[11px] text-slate-400 mt-1">Database product records</div>
+                  <div className="text-[11px] text-cyan-300 mt-1">{stats.totalClicks} total clicks</div>
                 </div>
 
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-amber-500/40 shadow-lg">
@@ -682,16 +797,25 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     <AlertTriangle className="w-4 h-4 text-amber-400" />
                   </div>
                   <div className="text-2xl font-black text-amber-400 tabular-nums">{stats.pendingProducts}</div>
-                  <div className="text-[11px] text-amber-300 mt-1 font-medium">Awaiting moderation</div>
+                  <div className="text-[11px] text-amber-300 mt-1 font-medium">Awaiting review</div>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-emerald-500/40 shadow-lg">
                   <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Total Link Clicks</span>
-                    <ArrowUpRight className="w-4 h-4 text-cyan-400" />
+                    <span className="text-xs font-semibold">Approved Products</span>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                   </div>
-                  <div className="text-2xl font-black text-white tabular-nums">{stats.totalClicks}</div>
-                  <div className="text-[11px] text-cyan-300 mt-1 font-medium">Real recorded clicks</div>
+                  <div className="text-2xl font-black text-emerald-400 tabular-nums">{stats.approvedProducts}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">Live on Marketplace</div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-red-500/40 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Rejected Products</span>
+                    <XCircle className="w-4 h-4 text-red-400" />
+                  </div>
+                  <div className="text-2xl font-black text-red-400 tabular-nums">{stats.rejectedProducts}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">Declined / suspended</div>
                 </div>
 
                 <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
@@ -700,54 +824,71 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                   </div>
                   <div className="text-2xl font-black text-emerald-400 tabular-nums">{stats.verifiedSales}</div>
-                  <div className="text-[11px] text-slate-400 mt-1 font-medium">Confirmed conversions</div>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
-                  <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Pending Commissions</span>
-                    <AlertCircle className="w-4 h-4 text-yellow-400" />
-                  </div>
-                  <div className="text-2xl font-black text-yellow-300 tabular-nums">
-                    ₹{stats.pendingCommissions.toLocaleString()}
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1 font-medium">Under verification</div>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
-                  <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Approved Commissions</span>
-                    <DollarSign className="w-4 h-4 text-amber-400" />
-                  </div>
-                  <div className="text-2xl font-black text-amber-400 tabular-nums">
-                    ₹{stats.approvedCommissions.toLocaleString()}
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1 font-medium">Verified affiliate earnings</div>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
-                  <div className="flex items-center justify-between text-slate-400 mb-2">
-                    <span className="text-xs font-semibold">Affiliate Withdrawals</span>
-                    <Wallet className="w-4 h-4 text-purple-400" />
-                  </div>
-                  <div className="text-2xl font-black text-white tabular-nums">
-                    ₹{stats.totalWithdrawalsAmount.toLocaleString()}
-                  </div>
-                  <div className="text-[11px] text-purple-300 mt-1 font-medium">
-                    ₹{financialReport.actualAffiliatePayouts.toLocaleString()} Paid out
-                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1 font-medium">Confirmed orders</div>
                 </div>
 
                 <div className="p-4 rounded-2xl bg-gradient-to-br from-pink-900/60 via-purple-900/40 to-[#190d3d] border border-pink-500/50 shadow-xl">
                   <div className="flex items-center justify-between text-pink-300 mb-2">
-                    <span className="text-xs font-bold">Actual Platform Revenue</span>
+                    <span className="text-xs font-bold">Platform Revenue</span>
                     <DollarSign className="w-4 h-4 text-pink-400" />
                   </div>
                   <div className="text-2xl font-black text-white tabular-nums">
                     ₹{stats.actualPlatformRevenue.toLocaleString()}
                   </div>
                   <div className="text-[11px] text-pink-200 mt-1 font-medium">
-                    Seller passes &amp; verified fees
+                    Passes + 15% + 5% fees
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Affiliate Commission</span>
+                    <DollarSign className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div className="text-2xl font-black text-amber-400 tabular-nums">
+                    ₹{stats.approvedCommissions.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1 font-medium">
+                    ₹{stats.pendingCommissions.toLocaleString()} pending
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-amber-500/40 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Pending Withdrawals</span>
+                    <Wallet className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div className="text-2xl font-black text-amber-300 tabular-nums">
+                    ₹{stats.pendingWithdrawalsAmount.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1 font-medium">
+                    {stats.pendingWithdrawalsCount} requests queued
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-emerald-500/40 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Completed Withdrawals</span>
+                    <Wallet className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <div className="text-2xl font-black text-emerald-400 tabular-nums">
+                    ₹{stats.completedWithdrawalsAmount.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1 font-medium">
+                    {stats.completedWithdrawalsCount} payouts settled
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#130b31] border border-indigo-500/40 shadow-lg">
+                  <div className="flex items-center justify-between text-slate-400 mb-2">
+                    <span className="text-xs font-semibold">Referral Earnings</span>
+                    <Gift className="w-4 h-4 text-indigo-400" />
+                  </div>
+                  <div className="text-2xl font-black text-indigo-300 tabular-nums">
+                    ₹{stats.referralEarnings.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1 font-medium">
+                    10% + ₹100 seller rewards
                   </div>
                 </div>
               </div>
@@ -1198,8 +1339,24 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                                   Verified
                                 </span>
                               )}
-                              <span className="text-[10px] bg-pink-500/20 text-pink-300 px-2 py-0.5 rounded-full">
-                                {seller.subscriptionStatus === 'active' ? '₹999 Paid' : 'No Sub'}
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                                  seller.subscriptionStatus === 'active'
+                                    ? 'bg-emerald-500/20 text-emerald-300'
+                                    : seller.subscriptionStatus === 'failed'
+                                    ? 'bg-red-500/20 text-red-300'
+                                    : seller.subscriptionStatus === 'refunded'
+                                    ? 'bg-purple-500/20 text-purple-300'
+                                    : 'bg-amber-500/20 text-amber-300'
+                                }`}
+                              >
+                                {seller.subscriptionStatus === 'active'
+                                  ? 'Active'
+                                  : seller.subscriptionStatus === 'failed'
+                                  ? 'Failed'
+                                  : seller.subscriptionStatus === 'refunded'
+                                  ? 'Refunded'
+                                  : 'Payment Pending'}
                               </span>
                             </div>
                             <p className="text-xs text-slate-400 font-mono">{seller.email}</p>
@@ -1221,19 +1378,27 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <button
                             onClick={() => toggleSellerVerification(seller.id, !seller.sellerVerified)}
                             className="px-3 py-1.5 rounded-xl bg-purple-900/80 hover:bg-purple-800 text-xs font-bold text-amber-300 border border-purple-700 cursor-pointer"
                           >
                             {seller.sellerVerified ? 'Revoke Seal' : 'Grant Gold Seal'}
                           </button>
-                          <button
-                            onClick={() => updateSubscriptionStatus(seller.id, seller.subscriptionStatus === 'active' ? 'none' : 'active')}
-                            className="px-3 py-1.5 rounded-xl bg-pink-950 text-xs font-bold text-pink-300 hover:bg-pink-900 border border-pink-800 cursor-pointer"
+                          <select
+                            value={seller.subscriptionStatus || 'pending'}
+                            onChange={(e) =>
+                              updateSubscriptionStatus(seller.id, e.target.value as MembershipStatus)
+                            }
+                            aria-label={`Membership status for ${seller.email}`}
+                            className="px-2.5 py-1.5 rounded-xl bg-pink-950/90 text-xs font-bold text-pink-200 border border-pink-700 cursor-pointer focus:outline-none"
                           >
-                            Toggle Pass
-                          </button>
+                            <option value="pending">Payment Pending</option>
+                            <option value="active">Active (₹999 Paid)</option>
+                            <option value="failed">Failed</option>
+                            <option value="refunded">Refunded</option>
+                            <option value="none">None / Revoked</option>
+                          </select>
                         </div>
                       </div>
                     );
@@ -1594,6 +1759,14 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                                     Approve
                                   </button>
                                 )}
+                                {p.approvalStatus === 'approved' && p.status === 'published' && (
+                                  <button
+                                    onClick={() => setSuspendProductTarget(p)}
+                                    className="px-2 py-1 rounded-lg bg-amber-950/80 text-amber-300 hover:bg-amber-900 border border-amber-700 text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    Suspend
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => setRejectProductTarget(p)}
                                   className="px-2 py-1 rounded-lg bg-purple-950 text-slate-300 hover:text-white border border-purple-800 text-[11px] cursor-pointer"
@@ -1615,6 +1788,89 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     </tbody>
                   </table>
                 </div>
+              </div>
+
+              {/* Reported Products Queue */}
+              <div className="rounded-2xl bg-[#130b31] border border-red-800/50 shadow-xl overflow-hidden">
+                <div className="p-4 border-b border-purple-900/60 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Flag className="w-4 h-4 text-red-400" />
+                    <h4 className="font-extrabold text-sm text-white">Reported Products Moderation Queue</h4>
+                  </div>
+                  <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-red-500/20 text-red-300 font-bold">
+                    {productReports.filter((r) => r.status === 'open' || r.status === 'investigating').length} Open Reports
+                  </span>
+                </div>
+                {productReports.length === 0 ? (
+                  <p className="text-xs text-slate-400 py-8 text-center">No product reports submitted.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                        <tr>
+                          <th className="py-3 px-4">Product</th>
+                          <th className="py-3 px-4">Reason &amp; Details</th>
+                          <th className="py-3 px-4">Status</th>
+                          <th className="py-3 px-4">Reported</th>
+                          <th className="py-3 px-4 text-right">Moderation</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-purple-900/40 text-slate-200">
+                        {productReports.map((rep: ProductReportRecord) => (
+                          <tr key={rep.id}>
+                            <td className="py-3 px-4 font-bold text-white">
+                              {rep.productTitle || rep.productId.slice(0, 10)}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className="font-semibold text-red-300 block">{rep.reason}</span>
+                              {rep.details && (
+                                <span className="text-[11px] text-slate-400 block max-w-xs truncate">
+                                  {rep.details}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-purple-950 text-amber-300 border border-purple-800">
+                                {rep.status}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-slate-400 text-[11px]">
+                              {new Date(rep.createdAt).toLocaleDateString()}
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="inline-flex items-center gap-1.5">
+                                {rep.status !== 'resolved' && (
+                                  <button
+                                    onClick={() => resolveProductReport(rep.id, 'resolved', 'Reviewed and resolved by Admin')}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer"
+                                  >
+                                    Resolve
+                                  </button>
+                                )}
+                                {rep.status === 'open' && (
+                                  <button
+                                    onClick={() => resolveProductReport(rep.id, 'investigating')}
+                                    className="px-2 py-1 rounded-lg bg-amber-950 text-amber-300 border border-amber-800 text-[11px] font-bold cursor-pointer"
+                                  >
+                                    Investigate
+                                  </button>
+                                )}
+                                {rep.status !== 'dismissed' && (
+                                  <button
+                                    onClick={() => resolveProductReport(rep.id, 'dismissed', 'Dismissed after verification')}
+                                    className="px-2 py-1 rounded-lg bg-purple-950 text-slate-300 border border-purple-800 text-[11px] cursor-pointer"
+                                  >
+                                    Dismiss
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1649,7 +1905,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                   </button>
                 </div>
 
-                {/* 6 Core Reconciled Ledger Streams */}
+                {/* 9 Core Reconciled Ledger Streams */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
                   <div className="p-4 rounded-xl bg-[#1c1244] border border-pink-500/30">
                     <span className="text-[11px] font-bold text-pink-300 uppercase block">
@@ -1663,9 +1919,33 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     </p>
                   </div>
 
+                  <div className="p-4 rounded-xl bg-[#1c1244] border border-amber-500/30">
+                    <span className="text-[11px] font-bold text-amber-300 uppercase block">
+                      2. Seller Platform Fees ({settings.platformFeePercentage ?? 15}%)
+                    </span>
+                    <div className="text-2xl font-black text-amber-400 mt-1">
+                      ₹{(financialReport.sellerSaleFees || 0).toLocaleString()}
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      15% per-sale platform fee collected from verified Seller marketplace orders.
+                    </p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-[#1c1244] border border-cyan-500/30">
+                    <span className="text-[11px] font-bold text-cyan-300 uppercase block">
+                      3. Affiliate Withdrawal Fees ({settings.withdrawalFeePercentage ?? 5}%)
+                    </span>
+                    <div className="text-2xl font-black text-cyan-300 mt-1">
+                      ₹{(financialReport.affiliateWithdrawalFees || 0).toLocaleString()}
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      5% processing fee retained when affiliate payouts settle (e.g. ₹1,000 → ₹50 fee).
+                    </p>
+                  </div>
+
                   <div className="p-4 rounded-xl bg-[#1c1244] border border-purple-800/70">
                     <span className="text-[11px] font-bold text-emerald-300 uppercase block">
-                      2. Verified Seller Commission
+                      4. Verified Affiliate Commission
                     </span>
                     <div className="text-2xl font-black text-emerald-400 mt-1">
                       ₹{financialReport.verifiedSellerCommission.toLocaleString()}
@@ -1677,31 +1957,43 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
                   <div className="p-4 rounded-xl bg-[#1c1244] border border-indigo-800/70">
                     <span className="text-[11px] font-bold text-indigo-300 uppercase block">
-                      3. External Network Commission
+                      5. External Network Commission
                     </span>
                     <div className="text-2xl font-black text-indigo-300 mt-1">
                       ₹{financialReport.externalNetworkCommission.toLocaleString()}
                     </div>
                     <p className="text-[10px] text-slate-400 mt-1">
-                      Amazon Associates & ClickBank earnings (reported separately; not ClickBarry controlled funds).
+                      External network earnings (reported separately; not ClickBarry controlled funds).
+                    </p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-[#1c1244] border border-indigo-500/30">
+                    <span className="text-[11px] font-bold text-indigo-300 uppercase block">
+                      6. Referral Rewards Accrued
+                    </span>
+                    <div className="text-2xl font-black text-indigo-300 mt-1">
+                      ₹{(financialReport.referralEarnings || 0).toLocaleString()}
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      10% lifetime referral rewards + ₹100 Seller pass bonuses.
                     </p>
                   </div>
 
                   <div className="p-4 rounded-xl bg-[#1c1244] border border-purple-800/70">
                     <span className="text-[11px] font-bold text-purple-300 uppercase block">
-                      4. Affiliate Withdrawal Requests
+                      7. Affiliate Withdrawal Requests
                     </span>
                     <div className="text-2xl font-black text-white mt-1">
                       ₹{financialReport.totalAffiliateWithdrawalRequests.toLocaleString()}
                     </div>
                     <p className="text-[10px] text-slate-400 mt-1">
-                      Total payout volume requested by affiliates across UPI & Bank Transfers.
+                      Total gross payout volume requested by affiliates across UPI &amp; Bank Transfers.
                     </p>
                   </div>
 
                   <div className="p-4 rounded-xl bg-[#1c1244] border border-emerald-500/30">
                     <span className="text-[11px] font-bold text-emerald-400 uppercase block">
-                      5. Actual Settled Payouts (Paid)
+                      8. Actual Settled Payouts (Net Paid)
                     </span>
                     <div className="text-2xl font-black text-emerald-400 mt-1">
                       ₹{financialReport.actualAffiliatePayouts.toLocaleString()}
@@ -1713,13 +2005,13 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
                   <div className="p-4 rounded-xl bg-[#1c1244] border border-amber-500/30">
                     <span className="text-[11px] font-bold text-amber-300 uppercase block">
-                      6. Pending / Processing Payouts
+                      9. Pending / Processing Payouts
                     </span>
                     <div className="text-2xl font-black text-amber-400 mt-1">
                       ₹{financialReport.pendingWithdrawalsVolume.toLocaleString()}
                     </div>
                     <p className="text-[10px] text-slate-400 mt-1">
-                      Currently locked & reserved in the double-entry accounting ledger.
+                      Currently locked &amp; reserved in the double-entry accounting ledger.
                     </p>
                   </div>
                 </div>
@@ -1727,8 +2019,10 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                 <div className="p-4 rounded-xl bg-purple-950/40 border border-purple-900/60 flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    <span className="font-bold text-white">Reconciliation Ledger Integrity:</span>
-                    <span className="text-slate-300">Available Balance + Reserved Balance = Total Approved Earnings</span>
+                    <span className="font-bold text-white">Net Platform Revenue (Passes + Fees − Referrals):</span>
+                    <span className="text-emerald-300 font-extrabold">
+                      ₹{financialReport.actualPlatformNetRevenue.toLocaleString()}
+                    </span>
                   </div>
                   <span className="font-mono text-emerald-400 font-bold">VERIFIED BALANCED</span>
                 </div>
@@ -1784,8 +2078,10 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] tracking-wider border-b border-purple-900/60">
                       <tr>
                         <th className="py-3 px-4">Request #</th>
-                        <th className="py-3 px-4">Amount</th>
-                        <th className="py-3 px-4">Method & Details</th>
+                        <th className="py-3 px-4">Gross</th>
+                        <th className="py-3 px-4">5% Fee</th>
+                        <th className="py-3 px-4">Net Payable</th>
+                        <th className="py-3 px-4">Method &amp; Details</th>
                         <th className="py-3 px-4">Status</th>
                         <th className="py-3 px-4">Bank UTR / UPI Ref</th>
                         <th className="py-3 px-4">Submitted</th>
@@ -1795,18 +2091,29 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     <tbody className="divide-y divide-purple-900/40 text-slate-200">
                       {filteredWithdrawals.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="py-8 text-center text-slate-400">
+                          <td colSpan={9} className="py-8 text-center text-slate-400">
                             No withdrawal requests found.
                           </td>
                         </tr>
                       ) : (
-                        filteredWithdrawals.map((req) => (
+                        filteredWithdrawals.map((req) => {
+                          const feePct = req.platformFeePct ?? settings.withdrawalFeePercentage ?? 5;
+                          const feeCalc = calculateWithdrawalBreakdown(req.amount, feePct);
+                          const feeAmt = req.platformFeeAmount ?? feeCalc.feeAmount;
+                          const netAmt = req.netPayableAmount ?? feeCalc.netPayable;
+                          return (
                           <tr key={req.id} className="hover:bg-purple-950/30 transition-colors">
                             <td className="py-3.5 px-4 font-mono font-bold text-pink-300">
                               {req.requestNumber}
                             </td>
-                            <td className="py-3.5 px-4 font-bold text-base text-white">
-                              ₹{req.amount}
+                            <td className="py-3.5 px-4 font-bold text-white">
+                              ₹{req.amount.toLocaleString()}
+                            </td>
+                            <td className="py-3.5 px-4 text-amber-300 font-semibold">
+                              -₹{feeAmt.toLocaleString()}
+                            </td>
+                            <td className="py-3.5 px-4 font-extrabold text-emerald-400">
+                              ₹{netAmt.toLocaleString()}
                             </td>
                             <td className="py-3.5 px-4">
                               <div className="flex items-center gap-1.5 font-medium">
@@ -1857,7 +2164,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                               </button>
                             </td>
                           </tr>
-                        ))
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -1865,6 +2173,610 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
               </div>
             </div>
           )}
+
+          {/* =================================================================== */}
+          {/* 7B. REFERRAL MANAGEMENT (AdminCore) */}
+          {/* =================================================================== */}
+          {activeSection === 'referrals' && (() => {
+            const effectiveComms = allReferralCommissions.length > 0 ? allReferralCommissions : adminReferralCommissions;
+            const filteredRefs = allReferrals.filter((r) => {
+              if (referralTypeFilter !== 'all' && r.referralType !== referralTypeFilter) return false;
+              const q = referralSearch.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                (r.referrerName || '').toLowerCase().includes(q) ||
+                (r.referrerEmail || '').toLowerCase().includes(q) ||
+                (r.referredName || '').toLowerCase().includes(q) ||
+                (r.referredEmail || '').toLowerCase().includes(q) ||
+                (r.referralCodeUsed || '').toLowerCase().includes(q)
+              );
+            });
+            const filteredComms = effectiveComms.filter((rc) => {
+              const q = referralSearch.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                (rc.referrerName || '').toLowerCase().includes(q) ||
+                (rc.referrerEmail || '').toLowerCase().includes(q) ||
+                (rc.referredName || '').toLowerCase().includes(q) ||
+                (rc.referredEmail || '').toLowerCase().includes(q) ||
+                (rc.sourceTransactionId || '').toLowerCase().includes(q)
+              );
+            });
+            const totalCreditedBonuses = effectiveComms.filter(
+              (c) => c.rewardType === 'one_time_bonus' && (c.status === 'approved' || c.status === 'paid')
+            ).length;
+            const totalNetReferralPaidOut = effectiveComms
+              .filter((c) => c.status === 'approved' || c.status === 'paid')
+              .reduce((s, c) => s + c.rewardAmount, 0);
+            const unresolvedFraudCount = fraudLogs.filter((f) => !f.resolved).length;
+
+            return (
+              <div className="space-y-6">
+                {/* Summary KPI Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="p-5 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-xl">
+                    <span className="text-xs text-slate-400">All Referrals</span>
+                    <div className="text-2xl font-black text-white mt-1">{allReferrals.length}</div>
+                    <span className="text-[11px] text-slate-400">
+                      {allReferrals.filter((r) => r.referralType === 'affiliate').length} Affiliates •{' '}
+                      {allReferrals.filter((r) => r.referralType === 'seller').length} Sellers
+                    </span>
+                  </div>
+                  <div className="p-5 rounded-2xl bg-[#130b31] border border-pink-500/30 shadow-xl">
+                    <span className="text-xs text-slate-400">₹100 Seller Bonuses Credited</span>
+                    <div className="text-2xl font-black text-pink-300 mt-1">
+                      ₹{(totalCreditedBonuses * (settings.sellerReferralBonus ?? 100)).toLocaleString()}
+                    </div>
+                    <span className="text-[11px] text-slate-400">
+                      {totalCreditedBonuses} verified ₹999 Seller passes
+                    </span>
+                  </div>
+                  <div className="p-5 rounded-2xl bg-[#130b31] border border-emerald-500/30 shadow-xl">
+                    <span className="text-xs text-slate-400">Approved &amp; Paid Referral Rewards</span>
+                    <div className="text-2xl font-black text-emerald-400 mt-1">
+                      ₹{totalNetReferralPaidOut.toLocaleString()}
+                    </div>
+                    <span className="text-[11px] text-slate-400">
+                      Strict Net-Earnings Basis ({settings.referralCommissionPercentage ?? 10}%)
+                    </span>
+                  </div>
+                  <div className="p-5 rounded-2xl bg-[#130b31] border border-amber-500/30 shadow-xl">
+                    <span className="text-xs text-slate-400">Fraud &amp; Reversal Alerts</span>
+                    <div className="text-2xl font-black text-amber-400 mt-1">{unresolvedFraudCount}</div>
+                    <span className="text-[11px] text-slate-400">
+                      {fraudLogs.length} total security events logged
+                    </span>
+                  </div>
+                </div>
+
+                {/* Sub-tabs & Search */}
+                <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                    {[
+                      { id: 'all', label: `All Referrals (${allReferrals.length})` },
+                      { id: 'commissions', label: `Referral Commission History (${effectiveComms.length})` },
+                      { id: 'fraud', label: `Fraud Detection (${unresolvedFraudCount})` },
+                      { id: 'settings', label: 'Referral Commission Settings' }
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setReferralSubTab(tab.id as any)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer transition-all ${
+                          referralSubTab === tab.id
+                            ? 'bg-gradient-to-r from-pink-600 to-rose-600 text-white shadow'
+                            : 'bg-[#140b33] text-slate-300 hover:text-white border border-purple-800/60'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1 min-w-[220px]">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={referralSearch}
+                        onChange={(e) => setReferralSearch(e.target.value)}
+                        placeholder="Search referrer, referred user, or code..."
+                        className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#140b33] border border-purple-800/80 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-pink-500"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => refreshReferrals()}
+                      className="p-2 rounded-xl bg-purple-950 text-slate-300 hover:text-white border border-purple-800 cursor-pointer"
+                      title="Refresh Referral Ledger"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {referralActionFeedback && (
+                  <div className="p-3 rounded-xl bg-indigo-950/70 border border-indigo-500/40 text-xs text-indigo-200 flex items-center justify-between">
+                    <span>{referralActionFeedback}</span>
+                    <button
+                      type="button"
+                      onClick={() => setReferralActionFeedback(null)}
+                      className="text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {/* SUB-TAB 1: ALL REFERRALS */}
+                {referralSubTab === 'all' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      {(['all', 'affiliate', 'seller'] as const).map((t) => (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => setReferralTypeFilter(t)}
+                          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold uppercase cursor-pointer ${
+                            referralTypeFilter === t
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-[#130b31] text-slate-400 border border-purple-800/60'
+                          }`}
+                        >
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-xl overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                            <tr>
+                              <th className="py-3 px-4">Referrer Details</th>
+                              <th className="py-3 px-4">Referred User Details</th>
+                              <th className="py-3 px-4">Referral Type</th>
+                              <th className="py-3 px-4">₹100 Bonus Status</th>
+                              <th className="py-3 px-4">Lifetime Net Commission</th>
+                              <th className="py-3 px-4">Status</th>
+                              <th className="py-3 px-4 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-purple-900/40">
+                            {filteredRefs.length === 0 ? (
+                              <tr>
+                                <td colSpan={7} className="py-12 text-center text-slate-400">
+                                  No referral records match your current filter.
+                                </td>
+                              </tr>
+                            ) : (
+                              filteredRefs.map((ref) => (
+                                <tr key={ref.id} className="hover:bg-[#1a1040]/50">
+                                  <td className="py-3 px-4">
+                                    <div className="font-bold text-white">
+                                      {ref.referrerName || ref.referrerId.slice(0, 10)}
+                                    </div>
+                                    <div className="text-[11px] text-slate-400 font-mono">
+                                      {ref.referrerEmail || ref.referrerId}
+                                    </div>
+                                    <span className="text-[10px] text-pink-300 font-mono">
+                                      Code: {ref.referralCodeUsed}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <div className="font-bold text-white">
+                                      {ref.referredName || ref.referredUserId.slice(0, 10)}
+                                    </div>
+                                    <div className="text-[11px] text-slate-400 font-mono">
+                                      {ref.referredEmail || ref.referredUserId}
+                                    </div>
+                                    {ref.referralType === 'seller' && (
+                                      <span className="text-[10px] text-slate-400 uppercase">
+                                        Pass: {ref.referredSubscriptionStatus || 'none'}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                        ref.referralType === 'seller'
+                                          ? 'bg-pink-500/20 text-pink-300'
+                                          : 'bg-indigo-500/20 text-indigo-300'
+                                      }`}
+                                    >
+                                      {ref.referralType}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    {ref.referralType === 'seller' ? (
+                                      <span
+                                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                          ref.bonusStatus === 'credited'
+                                            ? 'bg-emerald-500/20 text-emerald-300'
+                                            : ref.bonusStatus === 'reversed' || ref.bonusStatus === 'failed_pass'
+                                            ? 'bg-red-500/20 text-red-300'
+                                            : 'bg-amber-500/20 text-amber-300'
+                                        }`}
+                                      >
+                                        {ref.bonusStatus === 'credited'
+                                          ? `Credited (₹${ref.bonusAmount || 100})`
+                                          : ref.bonusStatus === 'reversed'
+                                          ? 'Reversed'
+                                          : ref.bonusStatus === 'failed_pass'
+                                          ? 'Pass Failed'
+                                          : 'Pending ₹999 Pass'}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[11px] text-slate-500">N/A</span>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-4 font-bold text-emerald-400">
+                                    ₹{(ref.lifetimeCommissionTotal || 0).toLocaleString()}
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                        ref.status === 'active'
+                                          ? 'bg-emerald-500/20 text-emerald-300'
+                                          : ref.status === 'blocked'
+                                          ? 'bg-red-500/20 text-red-300'
+                                          : 'bg-amber-500/20 text-amber-300'
+                                      }`}
+                                    >
+                                      {ref.status}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 text-right">
+                                    <button
+                                      type="button"
+                                      disabled={referralActionLoadingId === ref.id}
+                                      onClick={async () => {
+                                        setReferralActionLoadingId(ref.id);
+                                        const nextStatus = ref.status === 'blocked' ? 'active' : 'blocked';
+                                        const res = await adminToggleReferralStatus(
+                                          ref.id,
+                                          nextStatus,
+                                          nextStatus === 'blocked' ? 'Flagged by AdminCore Fraud Review' : 'Restored by AdminCore'
+                                        );
+                                        setReferralActionLoadingId(null);
+                                        setReferralActionFeedback(
+                                          res.success
+                                            ? `Referral ${ref.id.slice(0, 8)} updated to ${nextStatus}.`
+                                            : res.error || 'Failed to update referral.'
+                                        );
+                                      }}
+                                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                                        ref.status === 'blocked'
+                                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/60'
+                                          : 'bg-red-950 text-red-300 border border-red-700/60'
+                                      }`}
+                                    >
+                                      {ref.status === 'blocked' ? 'Reactivate' : 'Block'}
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* SUB-TAB 2: REFERRAL COMMISSION HISTORY */}
+                {referralSubTab === 'commissions' && (
+                  <div className="rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-xl overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                          <tr>
+                            <th className="py-3 px-4">Date</th>
+                            <th className="py-3 px-4">Referrer</th>
+                            <th className="py-3 px-4">Referred User</th>
+                            <th className="py-3 px-4">Reward Type</th>
+                            <th className="py-3 px-4">Net Earnings Base</th>
+                            <th className="py-3 px-4">Reward</th>
+                            <th className="py-3 px-4">Status</th>
+                            <th className="py-3 px-4 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-purple-900/40">
+                          {filteredComms.length === 0 ? (
+                            <tr>
+                              <td colSpan={8} className="py-12 text-center text-slate-400">
+                                No referral commission records found yet.
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredComms.map((rc) => (
+                              <tr key={rc.id} className="hover:bg-[#1a1040]/50">
+                                <td className="py-3 px-4 text-slate-400">
+                                  {new Date(rc.createdAt).toLocaleDateString()}
+                                </td>
+                                <td className="py-3 px-4">
+                                  <div className="font-bold text-white">
+                                    {rc.referrerName || rc.referrerId.slice(0, 10)}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 font-mono">
+                                    {rc.referrerEmail || rc.referrerId}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-4">
+                                  <div className="font-bold text-white">
+                                    {rc.referredName || rc.referredUserId.slice(0, 10)}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 font-mono">
+                                    {rc.referredEmail || rc.referredUserId}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-4">
+                                  <span className="font-semibold text-white block">
+                                    {rc.rewardType === 'one_time_bonus'
+                                      ? '₹100 Seller Pass Bonus'
+                                      : `${rc.commissionRate}% Lifetime Commission`}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    {rc.sourceTransactionId || rc.sourceType || '—'}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-4 font-mono text-slate-200">
+                                  ₹{rc.baseAmount.toLocaleString()}
+                                  {rc.deductionsAmount ? (
+                                    <span className="block text-[10px] text-slate-400">
+                                      Deductions: -₹{rc.deductionsAmount.toLocaleString()}
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td
+                                  className={`py-3 px-4 font-bold ${
+                                    rc.status === 'reversed' ? 'text-red-400 line-through' : 'text-emerald-400'
+                                  }`}
+                                >
+                                  ₹{rc.rewardAmount.toLocaleString()}
+                                </td>
+                                <td className="py-3 px-4">
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                      rc.status === 'approved' || rc.status === 'paid'
+                                        ? 'bg-emerald-500/20 text-emerald-300'
+                                        : rc.status === 'reversed'
+                                        ? 'bg-red-500/20 text-red-300'
+                                        : 'bg-amber-500/20 text-amber-300'
+                                    }`}
+                                  >
+                                    {rc.status}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-4 text-right space-x-1.5 whitespace-nowrap">
+                                  {rc.status === 'pending' && (
+                                    <button
+                                      type="button"
+                                      disabled={referralActionLoadingId === rc.id}
+                                      onClick={async () => {
+                                        setReferralActionLoadingId(rc.id);
+                                        const res = await adminUpdateReferralCommissionStatus(rc.id, 'approved');
+                                        setReferralActionLoadingId(null);
+                                        setReferralActionFeedback(
+                                          res.success ? 'Referral reward approved.' : res.error || 'Error approving reward.'
+                                        );
+                                      }}
+                                      className="px-2 py-1 rounded-lg bg-emerald-950 text-emerald-300 border border-emerald-700/60 text-[10px] font-bold cursor-pointer"
+                                    >
+                                      Approve
+                                    </button>
+                                  )}
+                                  {rc.status === 'approved' && (
+                                    <button
+                                      type="button"
+                                      disabled={referralActionLoadingId === rc.id}
+                                      onClick={async () => {
+                                        setReferralActionLoadingId(rc.id);
+                                        const res = await adminUpdateReferralCommissionStatus(rc.id, 'paid');
+                                        setReferralActionLoadingId(null);
+                                        setReferralActionFeedback(
+                                          res.success ? 'Referral reward marked Paid.' : res.error || 'Error updating status.'
+                                        );
+                                      }}
+                                      className="px-2 py-1 rounded-lg bg-indigo-950 text-indigo-300 border border-indigo-700/60 text-[10px] font-bold cursor-pointer"
+                                    >
+                                      Mark Paid
+                                    </button>
+                                  )}
+                                  {rc.status !== 'reversed' && (
+                                    <button
+                                      type="button"
+                                      disabled={referralActionLoadingId === rc.id}
+                                      onClick={async () => {
+                                        setReferralActionLoadingId(rc.id);
+                                        const res = await adminUpdateReferralCommissionStatus(
+                                          rc.id,
+                                          'reversed',
+                                          'Reversed by AdminCore review'
+                                        );
+                                        setReferralActionLoadingId(null);
+                                        setReferralActionFeedback(
+                                          res.success ? 'Referral commission reversed.' : res.error || 'Error reversing reward.'
+                                        );
+                                      }}
+                                      className="px-2 py-1 rounded-lg bg-red-950 text-red-300 border border-red-700/60 text-[10px] font-bold cursor-pointer"
+                                    >
+                                      Reverse
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* SUB-TAB 3: FRAUD DETECTION */}
+                {referralSubTab === 'fraud' && (
+                  <div className="space-y-4">
+                    <div className="p-4 rounded-2xl bg-[#130b31] border border-amber-500/30 flex items-start gap-3 text-xs">
+                      <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="font-bold text-white">Automated Referral Fraud Detection &amp; Integrity Guard</h4>
+                        <p className="text-slate-300 mt-0.5">
+                          Monitors and blocks self-referrals, duplicate attribution attempts, immutable referrer tampering, suspended referrer activity, and automatic reversals on refunded or failed transactions.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-xl overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                            <tr>
+                              <th className="py-3 px-4">Timestamp</th>
+                              <th className="py-3 px-4">Event Type</th>
+                              <th className="py-3 px-4">Severity</th>
+                              <th className="py-3 px-4">Actor / Code</th>
+                              <th className="py-3 px-4">Details</th>
+                              <th className="py-3 px-4 text-right">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-purple-900/40">
+                            {fraudLogs.length === 0 ? (
+                              <tr>
+                                <td colSpan={6} className="py-12 text-center text-slate-400">
+                                  No fraud or abuse attempts logged.
+                                </td>
+                              </tr>
+                            ) : (
+                              fraudLogs.map((log) => (
+                                <tr key={log.id}>
+                                  <td className="py-3 px-4 text-slate-400">
+                                    {new Date(log.createdAt).toLocaleString()}
+                                  </td>
+                                  <td className="py-3 px-4 font-mono text-pink-300">
+                                    {log.eventType}
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                        log.severity === 'critical' || log.severity === 'high'
+                                          ? 'bg-red-500/20 text-red-300'
+                                          : log.severity === 'medium'
+                                          ? 'bg-amber-500/20 text-amber-300'
+                                          : 'bg-slate-500/20 text-slate-300'
+                                      }`}
+                                    >
+                                      {log.severity}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 font-mono text-[11px] text-slate-200">
+                                    {log.userEmail || log.userId || '—'}
+                                    {log.attemptedCode && (
+                                      <span className="block text-pink-300">Code: {log.attemptedCode}</span>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-4 text-slate-300">{log.details}</td>
+                                  <td className="py-3 px-4 text-right">
+                                    {log.resolved ? (
+                                      <span className="text-[10px] font-bold text-emerald-400 uppercase">
+                                        Resolved
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => adminResolveFraudLog(log.id)}
+                                        className="px-2.5 py-1 rounded-lg bg-emerald-950 text-emerald-300 border border-emerald-700/60 text-[10px] font-bold cursor-pointer"
+                                      >
+                                        Mark Resolved
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* SUB-TAB 4: REFERRAL COMMISSION SETTINGS */}
+                {referralSubTab === 'settings' && (
+                  <form onSubmit={handleSaveSettings} className="max-w-3xl p-6 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-xl space-y-5">
+                    <div>
+                      <h3 className="font-extrabold text-sm text-white">Referral Commission &amp; Bonus Rules</h3>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Lifetime commissions are strictly computed on eligible net earnings after platform deductions — never on gross sales.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="text-xs font-semibold text-slate-300 block mb-1">
+                          Lifetime Referral Commission (%)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={50}
+                          step={0.5}
+                          value={tempSettings.referralCommissionPercentage ?? 10}
+                          onChange={(e) =>
+                            setTempSettings({
+                              ...tempSettings,
+                              referralCommissionPercentage: Number(e.target.value)
+                            })
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-slate-300 block mb-1">
+                          One-Time Seller Pass Bonus (₹)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={tempSettings.sellerReferralBonus ?? 100}
+                          onChange={(e) =>
+                            setTempSettings({ ...tempSettings, sellerReferralBonus: Number(e.target.value) })
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-slate-300 block mb-1">
+                          Calculation Basis
+                        </label>
+                        <select
+                          value={tempSettings.referralRevenueBasis || 'net_earnings'}
+                          onChange={(e) =>
+                            setTempSettings({
+                              ...tempSettings,
+                              referralRevenueBasis: e.target.value as 'net_earnings' | 'platform_revenue'
+                            })
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                        >
+                          <option value="net_earnings">Eligible Net Earnings Only (Recommended)</option>
+                          <option value="platform_revenue">Platform Net Revenue Share</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="submit"
+                        disabled={isSavingSettings}
+                        className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 text-white font-bold text-xs shadow-lg cursor-pointer"
+                      >
+                        {isSavingSettings ? 'Saving...' : 'Save Referral Settings'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            );
+          })()}
 
           {/* =================================================================== */}
           {/* 8. CATEGORY MANAGEMENT */}
@@ -2027,6 +2939,129 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                         onChange={(e) => setTempSettings({ ...tempSettings, sellerSubscriptionPrice: Number(e.target.value) })}
                         className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
                       />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Marketplace Commission, Platform Fees & Referral Rules */}
+                <div className="p-5 rounded-2xl bg-[#130b31] border border-purple-800/60 shadow-xl space-y-4">
+                  <h3 className="font-extrabold text-sm text-white flex items-center gap-2">
+                    <Sliders className="w-4 h-4 text-pink-400" />
+                    <span>Platform Fees, Commission Bounds &amp; Referral Program</span>
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        Seller Platform Fee (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={50}
+                        step={0.5}
+                        value={tempSettings.platformFeePercentage ?? 15}
+                        onChange={(e) =>
+                          setTempSettings({ ...tempSettings, platformFeePercentage: Number(e.target.value) })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        Affiliate Withdrawal Fee (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={25}
+                        step={0.5}
+                        value={tempSettings.withdrawalFeePercentage ?? 5}
+                        onChange={(e) =>
+                          setTempSettings({ ...tempSettings, withdrawalFeePercentage: Number(e.target.value) })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        Min Affiliate Commission (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={tempSettings.affiliateCommissionMin ?? 30}
+                        onChange={(e) =>
+                          setTempSettings({ ...tempSettings, affiliateCommissionMin: Number(e.target.value) })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        Max Affiliate Commission (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={30}
+                        max={100}
+                        value={tempSettings.affiliateCommissionMax ?? 100}
+                        onChange={(e) =>
+                          setTempSettings({ ...tempSettings, affiliateCommissionMax: Number(e.target.value) })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        Lifetime Referral Rate (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={50}
+                        step={0.5}
+                        value={tempSettings.referralCommissionPercentage ?? 10}
+                        onChange={(e) =>
+                          setTempSettings({
+                            ...tempSettings,
+                            referralCommissionPercentage: Number(e.target.value)
+                          })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        Seller Pass Referral Bonus (₹)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={tempSettings.sellerReferralBonus ?? 100}
+                        onChange={(e) =>
+                          setTempSettings({ ...tempSettings, sellerReferralBonus: Number(e.target.value) })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                      />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        Referral Commission Revenue Basis
+                      </label>
+                      <select
+                        value={tempSettings.referralRevenueBasis || 'net_earnings'}
+                        onChange={(e) =>
+                          setTempSettings({
+                            ...tempSettings,
+                            referralRevenueBasis: e.target.value as 'net_earnings' | 'platform_revenue'
+                          })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none"
+                      >
+                        <option value="net_earnings">Eligible Net Earnings Only (After Platform Deductions)</option>
+                        <option value="platform_revenue">Platform Net Revenue Share</option>
+                      </select>
                     </div>
                   </div>
                 </div>
@@ -2356,14 +3391,52 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
               >
                 Cancel
               </button>
+                <button
+                  onClick={async () => {
+                    await rejectProduct(rejectProductTarget.id, rejectReason);
+                    setRejectProductTarget(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs"
+                >
+                  Reject Product
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      {/* 4b. Suspend Product Modal */}
+      {suspendProductTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-md rounded-3xl bg-[#140b33] border border-amber-700/80 p-6 shadow-2xl space-y-4">
+            <h3 className="font-extrabold text-base text-white">Suspend Live Product</h3>
+            <p className="text-xs text-slate-400">
+              Suspend &ldquo;{suspendProductTarget.title}&rdquo; from the public Affiliate Marketplace immediately.
+            </p>
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1">Suspension Reason</label>
+              <textarea
+                rows={3}
+                value={suspendProductReason}
+                onChange={(e) => setSuspendProductReason(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-white text-xs focus:outline-none focus:border-amber-500"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setSuspendProductTarget(null)}
+                className="px-4 py-2 rounded-xl bg-purple-950 text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
               <button
                 onClick={async () => {
-                  await rejectProduct(rejectProductTarget.id, rejectReason);
-                  setRejectProductTarget(null);
+                  await suspendProduct(suspendProductTarget.id, suspendProductReason);
+                  setSuspendProductTarget(null);
                 }}
-                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs"
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs cursor-pointer"
               >
-                Reject Product
+                Confirm Suspend
               </button>
             </div>
           </div>

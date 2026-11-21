@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { StrawberryLogo } from './StrawberryLogo';
 import { useAuth } from '../context/AuthContext';
+import { useReferrals } from '../context/ReferralContext';
+import { GoogleAuthButton } from './GoogleAuthButton';
 import { UserRole } from '../types';
 import {
   X,
@@ -16,7 +18,8 @@ import {
   KeyRound,
   Eye,
   EyeOff,
-  TrendingUp
+  TrendingUp,
+  Gift
 } from 'lucide-react';
 
 interface AuthModalProps {
@@ -37,12 +40,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const {
     signUp,
     signIn,
+    signInWithGoogle,
+    oauthError,
+    clearOAuthError,
     resetPasswordForEmail,
     updatePassword,
     resendVerificationEmail,
     isPasswordRecovery,
     clearPasswordRecovery
   } = useAuth();
+  const { capturedReferrerCode } = useReferrals();
 
   const [mode, setMode] = useState<'login' | 'signup' | 'forgot' | 'reset'>(
     isPasswordRecovery ? 'reset' : initialMode
@@ -56,6 +63,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [showPassword, setShowPassword] = useState(false);
 
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [needsVerification, setNeedsVerification] = useState(false);
@@ -71,7 +79,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMessage('');
     setSuccessMessage('');
     setNeedsVerification(false);
+    setGoogleLoading(false);
   }, [initialMode, defaultRole, isPasswordRecovery, isOpen]);
+
+  useEffect(() => {
+    if (oauthError && isOpen) {
+      setErrorMessage(oauthError);
+      clearOAuthError();
+    }
+  }, [oauthError, isOpen, clearOAuthError]);
+
+  const handleGoogleAuth = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    setNeedsVerification(false);
+    setGoogleLoading(true);
+    const res = await signInWithGoogle(mode === 'signup' ? selectedRole : 'affiliate');
+    if (!res.success) {
+      setGoogleLoading(false);
+      setErrorMessage(res.message);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -316,6 +344,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         )}
 
+        {capturedReferrerCode && (mode === 'signup' || mode === 'login') && (
+          <div className="mb-3.5 px-3 py-2 rounded-xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-200 text-xs flex items-center gap-2">
+            <Gift className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>
+              Referral Code <strong className="font-mono text-white">{capturedReferrerCode}</strong> applied — linked permanently upon registration.
+            </span>
+          </div>
+        )}
+
         {errorMessage && (
           <div className="mb-4 p-3.5 rounded-2xl bg-red-950/80 border border-red-500/70 text-red-200 text-xs font-medium flex items-start gap-2.5">
             <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
@@ -341,6 +378,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <div className="mb-4 p-3.5 rounded-2xl bg-emerald-950/80 border border-emerald-500/70 text-emerald-200 text-xs font-medium flex items-start gap-2.5">
             <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
             <span>{successMessage}</span>
+          </div>
+        )}
+
+        {(mode === 'login' || mode === 'signup') && (
+          <div className="mb-3.5">
+            <GoogleAuthButton
+              onClick={handleGoogleAuth}
+              loading={googleLoading}
+              disabled={loading}
+              label={
+                mode === 'signup'
+                  ? `Continue with Google (${selectedRole === 'seller' ? 'Seller' : 'Affiliate'})`
+                  : 'Continue with Google'
+              }
+            />
           </div>
         )}
 

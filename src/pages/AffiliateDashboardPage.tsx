@@ -4,6 +4,8 @@ import { useAuth } from '../context/AuthContext';
 import { useProducts } from '../context/ProductContext';
 import { useHybridAffiliate } from '../context/HybridAffiliateContext';
 import { useWallet } from '../context/WalletContext';
+import { useReferrals } from '../context/ReferralContext';
+import { calculateWithdrawalBreakdown } from '../lib/fees';
 import { PromoteProductModal } from '../components/PromoteProductModal';
 import { WithdrawalRequestModal } from '../components/WithdrawalRequestModal';
 import {
@@ -30,7 +32,8 @@ import {
   X,
   ExternalLink,
   Rocket,
-  ArrowUpRight
+  ArrowUpRight,
+  Gift
 } from 'lucide-react';
 
 interface AffiliateDashboardPageProps {
@@ -43,10 +46,14 @@ type AffiliateTab =
   | 'overview'
   | 'marketplace'
   | 'links'
+  | 'clicks'
   | 'sales'
   | 'earnings'
+  | 'pending-commissions'
+  | 'approved-commissions'
   | 'commissions'
   | 'payouts'
+  | 'referrals'
   | 'profile';
 
 export const AffiliateDashboardPage: React.FC<AffiliateDashboardPageProps> = ({
@@ -77,6 +84,20 @@ export const AffiliateDashboardPage: React.FC<AffiliateDashboardPageProps> = ({
     settings,
     refreshWalletData
   } = useWallet();
+  const {
+    myReferralCode,
+    myReferralLink,
+    myReferrals,
+    totalReferredAffiliates,
+    totalReferredSellers,
+    myReferralCommissions,
+    totalReferralEarnings,
+    pendingReferralEarnings,
+    approvedReferralEarnings,
+    sellerBonusEarnedCount,
+    sellerBonusPendingCount,
+    refreshReferrals
+  } = useReferrals();
 
   const [activeTab, setActiveTab] = useState<AffiliateTab>('overview');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -84,6 +105,7 @@ export const AffiliateDashboardPage: React.FC<AffiliateDashboardPageProps> = ({
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [commissionStatusFilter, setCommissionStatusFilter] = useState<string>('all');
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
+  const [copiedRefLink, setCopiedRefLink] = useState(false);
   const [generatingProductId, setGeneratingProductId] = useState<string | null>(null);
   const [promotingProduct, setPromotingProduct] = useState<Product | null>(null);
   const [withdrawalModalOpen, setWithdrawalModalOpen] = useState(false);
@@ -235,10 +257,24 @@ export const AffiliateDashboardPage: React.FC<AffiliateDashboardPageProps> = ({
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'marketplace', label: 'Marketplace', icon: ShoppingBag, badge: products.length },
     { id: 'links', label: 'My Affiliate Links', icon: Link2, badge: affiliateLinks.length },
+    { id: 'clicks', label: 'My Clicks', icon: MousePointerClick, badge: totalOutboundClicks },
     { id: 'sales', label: 'My Sales', icon: CheckCircle2, badge: verifiedSalesCount },
     { id: 'earnings', label: 'Earnings', icon: DollarSign },
+    {
+      id: 'pending-commissions',
+      label: 'Pending Commission',
+      icon: Clock,
+      badge: commissionRecords.filter((c) => c.status === 'pending').length
+    },
+    {
+      id: 'approved-commissions',
+      label: 'Approved Commission',
+      icon: BadgeCheck,
+      badge: commissionRecords.filter((c) => c.status === 'verified' || c.status === 'paid').length
+    },
     { id: 'commissions', label: 'Commission History', icon: History, badge: commissionRecords.length },
     { id: 'payouts', label: 'Payout Requests', icon: Wallet, badge: myWithdrawals.length },
+    { id: 'referrals', label: 'Referral Earnings', icon: Gift, badge: myReferrals.length },
     { id: 'profile', label: 'Profile', icon: User }
   ];
 
@@ -735,6 +771,62 @@ export const AffiliateDashboardPage: React.FC<AffiliateDashboardPageProps> = ({
           </div>
         )}
 
+        {/* MY CLICKS TAB */}
+        {activeTab === 'clicks' && (
+          <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="font-bold text-base text-white">Tracked Click Activity ({totalOutboundClicks})</h3>
+                <p className="text-xs text-slate-400">
+                  Real clicks recorded from your ClickBarry affiliate links. Clicks alone never generate fake earnings.
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveTab('links')}
+                className="px-4 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-xs font-bold text-slate-200 cursor-pointer"
+              >
+                View My Links
+              </button>
+            </div>
+            {recentClicks.length === 0 ? (
+              <div className="py-12 text-center space-y-2">
+                <MousePointerClick className="w-10 h-10 text-slate-500 mx-auto" />
+                <p className="text-sm font-bold text-white">No Clicks Tracked Yet</p>
+                <p className="text-xs text-slate-400">
+                  Share an affiliate tracking link from the Marketplace to record real clicks here.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                    <tr>
+                      <th className="py-3 px-4">Tracking ID</th>
+                      <th className="py-3 px-4">Product / Network</th>
+                      <th className="py-3 px-4">Destination URL</th>
+                      <th className="py-3 px-4">Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-purple-900/40">
+                    {recentClicks.map((click) => (
+                      <tr key={click.id}>
+                        <td className="py-3 px-4 font-mono text-pink-300 font-bold">{click.trackingId}</td>
+                        <td className="py-3 px-4 text-slate-200">{click.networkName}</td>
+                        <td className="py-3 px-4 font-mono text-[11px] text-slate-400 max-w-[260px] truncate">
+                          {click.destinationUrl}
+                        </td>
+                        <td className="py-3 px-4 text-slate-400 whitespace-nowrap">
+                          {new Date(click.createdAt).toLocaleString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* MY SALES TAB */}
         {activeTab === 'sales' && (
           <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-6 space-y-4">
@@ -937,6 +1029,110 @@ export const AffiliateDashboardPage: React.FC<AffiliateDashboardPageProps> = ({
           </div>
         )}
 
+        {/* PENDING COMMISSION TAB */}
+        {activeTab === 'pending-commissions' && (
+          <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="font-bold text-base text-white">
+                  Pending Commissions: <span className="text-amber-400">₹{pendingCommissionAmount.toLocaleString()}</span>
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Commissions awaiting merchant &amp; platform verification before moving to your available wallet balance.
+                </p>
+              </div>
+            </div>
+            {commissionRecords.filter((c) => c.status === 'pending').length === 0 ? (
+              <p className="text-xs text-slate-400 py-10 text-center">No pending commissions right now.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                    <tr>
+                      <th className="py-3 px-4">Order Ref</th>
+                      <th className="py-3 px-4">Product / Network</th>
+                      <th className="py-3 px-4">Sale Amount</th>
+                      <th className="py-3 px-4">Pending Commission</th>
+                      <th className="py-3 px-4">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-purple-900/40">
+                    {commissionRecords
+                      .filter((c) => c.status === 'pending')
+                      .map((rec) => (
+                        <tr key={rec.id}>
+                          <td className="py-3 px-4 font-mono text-pink-300">{rec.orderReference}</td>
+                          <td className="py-3 px-4 text-slate-200">{rec.networkName}</td>
+                          <td className="py-3 px-4 text-white">₹{rec.saleAmount.toLocaleString()}</td>
+                          <td className="py-3 px-4 font-bold text-amber-400">₹{rec.commissionAmount.toLocaleString()}</td>
+                          <td className="py-3 px-4 text-slate-400">
+                            {new Date(rec.createdAt).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* APPROVED COMMISSION TAB */}
+        {activeTab === 'approved-commissions' && (
+          <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-base text-white">
+                  Approved Commissions: <span className="text-emerald-400">₹{approvedCommissionAmount.toLocaleString()}</span>
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Available to withdraw: <strong className="text-emerald-300">₹{wallet.availableBalance.toLocaleString()}</strong>
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveTab('payouts')}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+              >
+                Request Payout
+              </button>
+            </div>
+            {commissionRecords.filter((c) => c.status === 'verified' || c.status === 'paid').length === 0 ? (
+              <p className="text-xs text-slate-400 py-10 text-center">No approved commissions yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                    <tr>
+                      <th className="py-3 px-4">Order Ref</th>
+                      <th className="py-3 px-4">Product / Network</th>
+                      <th className="py-3 px-4">Sale Amount</th>
+                      <th className="py-3 px-4">Approved Commission</th>
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-purple-900/40">
+                    {commissionRecords
+                      .filter((c) => c.status === 'verified' || c.status === 'paid')
+                      .map((rec) => (
+                        <tr key={rec.id}>
+                          <td className="py-3 px-4 font-mono text-pink-300">{rec.orderReference}</td>
+                          <td className="py-3 px-4 text-slate-200">{rec.networkName}</td>
+                          <td className="py-3 px-4 text-white">₹{rec.saleAmount.toLocaleString()}</td>
+                          <td className="py-3 px-4 font-bold text-emerald-400">₹{rec.commissionAmount.toLocaleString()}</td>
+                          <td className="py-3 px-4 uppercase font-bold text-emerald-300 text-[10px]">{rec.status}</td>
+                          <td className="py-3 px-4 text-slate-400">
+                            {new Date(rec.createdAt).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* PAYOUT REQUESTS TAB */}
         {activeTab === 'payouts' && (
           <div className="space-y-6">
@@ -946,7 +1142,7 @@ export const AffiliateDashboardPage: React.FC<AffiliateDashboardPageProps> = ({
                   Available Balance: <span className="text-emerald-400">₹{wallet.availableBalance.toLocaleString()}</span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  Minimum payout: ₹{settings.minWithdrawalAmount} • {settings.processingInfo}
+                  Minimum payout: ₹{settings.minWithdrawalAmount} • {settings.withdrawalFeePercentage ?? 5}% platform withdrawal fee applies (e.g. ₹1,000 request → ₹50 fee → ₹950 net payout)
                 </p>
               </div>
               <button
@@ -968,36 +1164,303 @@ export const AffiliateDashboardPage: React.FC<AffiliateDashboardPageProps> = ({
                       <tr>
                         <th className="py-3 px-4">Request #</th>
                         <th className="py-3 px-4">Method</th>
-                        <th className="py-3 px-4">Amount</th>
+                        <th className="py-3 px-4">Gross</th>
+                        <th className="py-3 px-4">5% Fee</th>
+                        <th className="py-3 px-4">Net Payable</th>
                         <th className="py-3 px-4">Status</th>
                         <th className="py-3 px-4">UTR / Reference</th>
                         <th className="py-3 px-4">Date</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-purple-900/40">
-                      {myWithdrawals.map((req) => (
-                        <tr key={req.id}>
-                          <td className="py-3 px-4 font-mono text-pink-300 font-bold">{req.requestNumber}</td>
-                          <td className="py-3 px-4 uppercase text-slate-300">{req.paymentMethod}</td>
-                          <td className="py-3 px-4 font-bold text-white">₹{req.amount.toLocaleString()}</td>
-                          <td className="py-3 px-4">
+                      {myWithdrawals.map((req) => {
+                        const feePct = req.platformFeePct ?? settings.withdrawalFeePercentage ?? 5;
+                        const breakdown = calculateWithdrawalBreakdown(req.amount, feePct);
+                        const feeAmt = req.platformFeeAmount ?? breakdown.feeAmount;
+                        const netAmt = req.netPayableAmount ?? breakdown.netPayable;
+                        return (
+                          <tr key={req.id}>
+                            <td className="py-3 px-4 font-mono text-pink-300 font-bold">{req.requestNumber}</td>
+                            <td className="py-3 px-4 uppercase text-slate-300">{req.paymentMethod}</td>
+                            <td className="py-3 px-4 font-bold text-white">₹{req.amount.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-amber-300">-₹{feeAmt.toLocaleString()}</td>
+                            <td className="py-3 px-4 font-extrabold text-emerald-400">₹{netAmt.toLocaleString()}</td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  req.status === 'paid'
+                                    ? 'bg-emerald-500/20 text-emerald-300'
+                                    : req.status === 'rejected'
+                                    ? 'bg-red-500/20 text-red-300'
+                                    : 'bg-amber-500/20 text-amber-300'
+                                }`}
+                              >
+                                {req.status}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 font-mono text-slate-300">
+                              {req.transactionReference || req.rejectionReason || '—'}
+                            </td>
+                            <td className="py-3 px-4 text-slate-400">
+                              {new Date(req.createdAt).toLocaleDateString()}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* REFERRAL EARNINGS TAB */}
+        {activeTab === 'referrals' && (
+          <div className="space-y-6">
+            <div className="bg-gradient-to-r from-indigo-950/60 via-purple-950/60 to-pink-950/60 rounded-2xl border border-indigo-500/40 p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-300">
+                    ClickBarry Affiliate Referral Program
+                  </span>
+                  <h2 className="text-xl font-black text-white mt-0.5">
+                    My Referral Link — Earn 10% Lifetime (Net Earnings) + ₹100 Seller Bonus
+                  </h2>
+                  <p className="text-xs text-slate-300 mt-1">
+                    Earn <strong>10% lifetime commission</strong> strictly on referred Affiliates&apos; &amp; Sellers&apos; eligible <strong>net earnings</strong> after platform deductions, plus a <strong>one-time ₹100 bonus</strong> once a referred Seller&apos;s ₹999 Lifetime Pass is verified active. Failed or refunded transactions never generate referral earnings.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-3 py-1 rounded-full bg-purple-950 border border-purple-700 text-xs font-mono text-pink-300 font-bold">
+                    Code: {myReferralCode || '—'}
+                  </span>
+                  <button
+                    onClick={() => refreshReferrals()}
+                    className="p-2 rounded-xl bg-purple-950 border border-purple-700 text-slate-300 hover:text-white cursor-pointer"
+                    title="Refresh Referral Data"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-300 block">
+                  My Referral Link
+                </label>
+                <div className="flex items-center gap-2 bg-black/40 p-2.5 rounded-xl border border-purple-800/60">
+                  <input
+                    type="text"
+                    readOnly
+                    value={myReferralLink}
+                    className="bg-transparent text-xs text-pink-200 font-mono flex-1 outline-none truncate"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!myReferralLink) return;
+                      try {
+                        await navigator.clipboard.writeText(myReferralLink);
+                        setCopiedRefLink(true);
+                        showToast('Referral link copied!', 'success');
+                        setTimeout(() => setCopiedRefLink(false), 2000);
+                      } catch {}
+                    }}
+                    className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    {copiedRefLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedRefLink ? 'Copied!' : 'Copy Referral Link'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">Total Referred Affiliates</span>
+                <p className="text-2xl font-black text-indigo-300 mt-1">{totalReferredAffiliates}</p>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">Total Referred Sellers</span>
+                <p className="text-2xl font-black text-pink-300 mt-1">{totalReferredSellers}</p>
+                <span className="text-[10px] text-slate-400">
+                  {sellerBonusEarnedCount} active pass • {sellerBonusPendingCount} pending
+                </span>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">Referral Earnings</span>
+                <p className="text-2xl font-black text-emerald-400 mt-1">
+                  ₹{totalReferralEarnings.toLocaleString()}
+                </p>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">Pending Referral Commission</span>
+                <p className="text-2xl font-black text-amber-400 mt-1">
+                  ₹{pendingReferralEarnings.toLocaleString()}
+                </p>
+              </div>
+              <div className="bg-[#140b33] p-5 rounded-2xl border border-purple-900/60">
+                <span className="text-xs text-slate-400">Approved Referral Commission</span>
+                <p className="text-2xl font-black text-emerald-300 mt-1">
+                  ₹{approvedReferralEarnings.toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-sm text-white">Referred Partners ({myReferrals.length})</h3>
+                <span className="text-[11px] text-slate-400">
+                  Permanent attribution • Self &amp; duplicate referrals blocked
+                </span>
+              </div>
+              {myReferrals.length === 0 ? (
+                <p className="text-xs text-slate-400 py-8 text-center">
+                  No referred affiliates or sellers yet. Share your referral link above to start earning!
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                      <tr>
+                        <th className="py-2.5 px-3">Referred User</th>
+                        <th className="py-2.5 px-3">Referral Type</th>
+                        <th className="py-2.5 px-3">Account / Pass Status</th>
+                        <th className="py-2.5 px-3">₹100 Bonus Status</th>
+                        <th className="py-2.5 px-3">Lifetime Earned</th>
+                        <th className="py-2.5 px-3">Joined</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-purple-900/40">
+                      {myReferrals.map((r) => (
+                        <tr key={r.id}>
+                          <td className="py-3 px-3">
+                            <span className="font-bold text-white block">
+                              {r.referredName || `Partner ${r.referredUserId.slice(0, 8)}`}
+                            </span>
+                            {r.referredEmail && (
+                              <span className="text-[10px] text-slate-400 font-mono">{r.referredEmail}</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3">
                             <span
                               className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                req.status === 'paid'
+                                r.referralType === 'seller'
+                                  ? 'bg-pink-500/20 text-pink-300'
+                                  : 'bg-indigo-500/20 text-indigo-300'
+                              }`}
+                            >
+                              {r.referralType}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className="text-[11px] font-semibold text-slate-300 uppercase">
+                              {r.referralType === 'seller'
+                                ? r.referredSubscriptionStatus || 'pending'
+                                : r.status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3">
+                            {r.referralType === 'seller' ? (
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  r.bonusStatus === 'credited'
+                                    ? 'bg-emerald-500/20 text-emerald-300'
+                                    : r.bonusStatus === 'reversed' || r.bonusStatus === 'failed_pass'
+                                    ? 'bg-red-500/20 text-red-300'
+                                    : 'bg-amber-500/20 text-amber-300'
+                                }`}
+                              >
+                                {r.bonusStatus === 'credited'
+                                  ? '₹100 Credited'
+                                  : r.bonusStatus === 'reversed'
+                                  ? 'Reversed'
+                                  : r.bonusStatus === 'failed_pass'
+                                  ? 'Pass Failed'
+                                  : 'Pending ₹999 Pass'}
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-slate-500">N/A (Affiliate)</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 font-bold text-emerald-400">
+                            ₹{(r.lifetimeCommissionTotal || 0).toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3 text-slate-400">
+                            {new Date(r.createdAt).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-[#140b33] rounded-2xl border border-purple-900/60 p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-sm text-white">Referral History</h3>
+                <span className="text-[11px] text-slate-400">
+                  Calculated on eligible net earnings (failed &amp; refunded excluded)
+                </span>
+              </div>
+              {myReferralCommissions.length === 0 ? (
+                <p className="text-xs text-slate-400 py-8 text-center">
+                  No referral commission entries recorded yet.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1b1046] text-slate-300 uppercase font-mono text-[10px] border-b border-purple-900/60">
+                      <tr>
+                        <th className="py-2.5 px-3">Date</th>
+                        <th className="py-2.5 px-3">Reward Type</th>
+                        <th className="py-2.5 px-3">Net Base</th>
+                        <th className="py-2.5 px-3">Rate</th>
+                        <th className="py-2.5 px-3">Commission</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-purple-900/40">
+                      {myReferralCommissions.map((rc) => (
+                        <tr key={rc.id}>
+                          <td className="py-3 px-3 text-slate-400">
+                            {new Date(rc.createdAt).toLocaleDateString()}
+                          </td>
+                          <td className="py-3 px-3 font-semibold text-white">
+                            {rc.rewardType === 'one_time_bonus'
+                              ? '₹100 Seller Pass Bonus'
+                              : '10% Lifetime Net Commission'}
+                          </td>
+                          <td className="py-3 px-3 text-slate-300 font-mono">
+                            ₹{rc.baseAmount.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3 text-slate-300">
+                            {rc.rewardType === 'one_time_bonus' ? 'One-Time' : `${rc.commissionRate}%`}
+                          </td>
+                          <td
+                            className={`py-3 px-3 font-bold ${
+                              rc.status === 'reversed' ? 'text-red-400 line-through' : 'text-emerald-400'
+                            }`}
+                          >
+                            +₹{rc.rewardAmount.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3">
+                            <span
+                              className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${
+                                rc.status === 'approved' || rc.status === 'paid'
                                   ? 'bg-emerald-500/20 text-emerald-300'
-                                  : req.status === 'rejected'
+                                  : rc.status === 'reversed'
                                   ? 'bg-red-500/20 text-red-300'
                                   : 'bg-amber-500/20 text-amber-300'
                               }`}
                             >
-                              {req.status}
+                              {rc.status}
                             </span>
                           </td>
-                          <td className="py-3 px-4 font-mono text-slate-300">
-                            {req.transactionReference || req.rejectionReason || '—'}
-                          </td>
-                          <td className="py-3 px-4 text-slate-400">
-                            {new Date(req.createdAt).toLocaleDateString()}
+                          <td className="py-3 px-3 text-slate-400 text-[11px]">
+                            {rc.reversalReason || rc.notes || '—'}
                           </td>
                         </tr>
                       ))}

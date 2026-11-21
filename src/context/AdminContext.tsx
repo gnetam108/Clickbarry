@@ -3,10 +3,14 @@ import {
   AdminRole,
   AdminUserRecord,
   AdminAuditLog,
+  MembershipStatus,
   PlatformCategory,
+  PlatformFeeRecord,
   PlatformWebsiteSettings,
   DateFilterPeriod,
-  FinancialReconciliationReport
+  FinancialReconciliationReport,
+  ReferralCommissionRecord,
+  SaleRecord
 } from '../types';
 import { supabase } from '../lib/supabase';
 import { useAuth, PRIMARY_SUPER_ADMIN_EMAIL } from './AuthContext';
@@ -27,8 +31,14 @@ const DEFAULT_SETTINGS: PlatformWebsiteSettings = {
   currencySymbol: '₹',
   minWithdrawalAmount: 500,
   maxWithdrawalAmount: 100000,
+  withdrawalFeePercentage: 5,
   sellerSubscriptionPrice: 999,
-  platformFeePercentage: 0,
+  platformFeePercentage: 15,
+  affiliateCommissionMin: 30,
+  affiliateCommissionMax: 100,
+  referralCommissionPercentage: 10,
+  sellerReferralBonus: 100,
+  referralRevenueBasis: 'net_earnings',
   featuredProductIds: [],
   bannerAnnouncement: 'Earn commissions promoting verified creator products or list once as a Seller!',
   isRegistrationOpen: true,
@@ -110,10 +120,11 @@ interface AdminContextType {
 
   updateUserStatus: (userId: string, status: 'active' | 'suspended', reason?: string) => Promise<{ success: boolean; error?: string }>;
   toggleSellerVerification: (userId: string, verified: boolean) => Promise<{ success: boolean; error?: string }>;
-  updateSubscriptionStatus: (userId: string, status: 'active' | 'none' | 'pending') => Promise<{ success: boolean; error?: string }>;
+  updateSubscriptionStatus: (userId: string, status: MembershipStatus) => Promise<{ success: boolean; error?: string }>;
 
   approveProduct: (productId: string) => Promise<{ success: boolean; error?: string }>;
   rejectProduct: (productId: string, reason: string) => Promise<{ success: boolean; error?: string }>;
+  suspendProduct: (productId: string, reason: string) => Promise<{ success: boolean; error?: string }>;
   toggleFeaturedProduct: (productId: string, isFeatured: boolean) => Promise<{ success: boolean; error?: string }>;
   deleteProductAdmin: (productId: string, reason: string) => Promise<{ success: boolean; error?: string }>;
 
@@ -123,6 +134,9 @@ interface AdminContextType {
 
   updateWebsiteSettings: (newSettings: Partial<PlatformWebsiteSettings>) => Promise<{ success: boolean; error?: string }>;
   addAuditLog: (action: string, targetType: AdminAuditLog['targetType'], targetId: string, details: string) => Promise<void>;
+  platformFeesLedger: PlatformFeeRecord[];
+  salesLedger: SaleRecord[];
+  adminReferralCommissions: ReferralCommissionRecord[];
   financialReport: FinancialReconciliationReport;
   exportToCsv: (dataType: 'users' | 'sellers' | 'affiliates' | 'products' | 'clicks' | 'commissions' | 'withdrawals' | 'financials') => void;
   refreshAdminData: () => Promise<void>;
@@ -147,6 +161,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [rawCategories, setRawCategories] = useState<PlatformCategory[]>(DEFAULT_CATEGORIES);
   const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([]);
   const [users, setUsers] = useState<AdminUserRecord[]>([]);
+  const [platformFeesLedger, setPlatformFeesLedger] = useState<PlatformFeeRecord[]>([]);
+  const [salesLedger, setSalesLedger] = useState<SaleRecord[]>([]);
+  const [adminReferralCommissions, setAdminReferralCommissions] = useState<ReferralCommissionRecord[]>([]);
 
   // Strict server/DB-backed Super Admin check
   const isSuperAdmin = useMemo(() => {
@@ -256,8 +273,14 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           currencySymbol: s.currency_symbol || '₹',
           minWithdrawalAmount: Number(s.min_withdrawal_amount) || 500,
           maxWithdrawalAmount: Number(s.max_withdrawal_amount) || 100000,
+          withdrawalFeePercentage: Number(s.withdrawal_fee_percentage ?? 5),
           sellerSubscriptionPrice: Number(s.seller_subscription_price) || 999,
-          platformFeePercentage: Number(s.platform_fee_percentage) || 0,
+          platformFeePercentage: Number(s.platform_fee_percentage ?? 15) || 15,
+          affiliateCommissionMin: Number(s.affiliate_commission_min ?? 30),
+          affiliateCommissionMax: Number(s.affiliate_commission_max ?? 100),
+          referralCommissionPercentage: Number(s.referral_commission_percentage ?? 10),
+          sellerReferralBonus: Number(s.seller_referral_bonus ?? 100),
+          referralRevenueBasis: s.referral_revenue_basis === 'platform_revenue' ? 'platform_revenue' : 'net_earnings',
           featuredProductIds: s.featured_product_ids || [],
           bannerAnnouncement: s.banner_announcement || DEFAULT_SETTINGS.bannerAnnouncement,
           isRegistrationOpen: s.is_registration_open ?? true,
@@ -283,11 +306,73 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
 
       if (isSuperAdmin) {
-        const [profilesRes, logsRes, adminProds] = await Promise.all([
+        const [profilesRes, logsRes, adminProds, feesRes, salesRes, refCommRes] = await Promise.all([
           supabase.from('profiles').select('*').order('created_at', { ascending: false }),
           supabase.from('admin_audit_logs').select('*').order('created_at', { ascending: false }).limit(200),
-          fetchAllProductsAdmin()
+          fetchAllProductsAdmin(),
+          supabase.from('platform_fees').select('*').order('created_at', { ascending: false }),
+          supabase.from('sales').select('*').order('created_at', { ascending: false }),
+          supabase.from('referral_commissions').select('*').order('created_at', { ascending: false })
         ]);
+
+        if (feesRes.data && !feesRes.error) {
+          setPlatformFeesLedger(
+            feesRes.data.map((f: any) => ({
+              id: f.id,
+              sourceType: f.source_type,
+              referenceId: f.reference_id,
+              userId: f.user_id,
+              grossAmount: Number(f.gross_amount || 0),
+              feePercentage: Number(f.fee_percentage || 0),
+              feeAmount: Number(f.fee_amount || 0),
+              netAmount: Number(f.net_amount || 0),
+              notes: f.notes,
+              createdAt: f.created_at
+            }))
+          );
+        }
+
+        if (salesRes.data && !salesRes.error) {
+          setSalesLedger(
+            salesRes.data.map((s: any) => ({
+              id: s.id,
+              productId: s.product_id,
+              sellerId: s.seller_id,
+              affiliateId: s.affiliate_id,
+              trackingSlug: s.tracking_slug,
+              orderReference: s.order_reference,
+              buyerEmail: s.buyer_email,
+              saleAmount: Number(s.sale_amount || 0),
+              affiliateCommissionRate: Number(s.affiliate_commission_rate || 0),
+              affiliateCommissionAmount: Number(s.affiliate_commission_amount || 0),
+              platformFeePct: Number(s.platform_fee_pct || 15),
+              platformFeeAmount: Number(s.platform_fee_amount || 0),
+              sellerNetAmount: Number(s.seller_net_amount || 0),
+              status: s.status,
+              verifiedAt: s.verified_at,
+              createdAt: s.created_at
+            }))
+          );
+        }
+
+        if (refCommRes.data && !refCommRes.error) {
+          setAdminReferralCommissions(
+            refCommRes.data.map((rc: any) => ({
+              id: rc.id,
+              referrerId: rc.referrer_id,
+              referredUserId: rc.referred_user_id,
+              referralId: rc.referral_id,
+              rewardType: rc.reward_type,
+              sourceTransactionId: rc.source_transaction_id,
+              baseAmount: Number(rc.base_amount || 0),
+              commissionRate: Number(rc.commission_rate || 0),
+              rewardAmount: Number(rc.reward_amount || 0),
+              status: rc.status,
+              notes: rc.notes,
+              createdAt: rc.created_at
+            }))
+          );
+        }
 
         if (logsRes.data && !logsRes.error) {
           setAuditLogs(
@@ -328,8 +413,10 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               adminRole: normRole === 'admin' ? 'super_admin' : undefined,
               status: p.status === 'suspended' ? 'suspended' : 'active',
               sellerVerified: Boolean(p.seller_verified),
-              subscriptionStatus: (p.subscription_status as AdminUserRecord['subscriptionStatus']) || 'none',
+              subscriptionStatus: (p.subscription_status as MembershipStatus) || 'none',
               subscriptionPrice: Number(p.subscription_price || 999),
+              referralCode: p.referral_code || undefined,
+              referredBy: p.referred_by || undefined,
               totalProductsCount: userProds.length,
               totalClicksCount: userClicks,
               totalSalesCount: verifiedComms.length,
@@ -345,6 +432,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } else {
         setUsers([]);
         setAuditLogs([]);
+        setPlatformFeesLedger([]);
+        setSalesLedger([]);
+        setAdminReferralCommissions([]);
       }
     } catch (err) {
       console.warn('Admin loadPlatformData error:', err);
@@ -413,25 +503,50 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateSubscriptionStatus = async (
     userId: string,
-    subStatus: 'active' | 'none' | 'pending'
+    subStatus: MembershipStatus
   ): Promise<{ success: boolean; error?: string }> => {
     if (!isSuperAdmin) return { success: false, error: 'Unauthorized' };
     const targetUser = users.find((u) => u.id === userId);
     if (!targetUser) return { success: false, error: 'User not found' };
 
     if (supabase) {
-      const { error } = await supabase.from('profiles').update({ subscription_status: subStatus }).eq('id', userId);
+      const updates: any = { subscription_status: subStatus };
+      if (subStatus === 'active') {
+        updates.seller_verified = true;
+        updates.membership_activated_at = new Date().toISOString();
+      }
+      const { error } = await supabase.from('profiles').update(updates).eq('id', userId);
       if (error) return { success: false, error: error.message };
+
+      // Trigger ₹100 Seller Referral Bonus if membership just became verified active
+      if (subStatus === 'active') {
+        try {
+          await supabase.rpc('process_seller_referral_reward', {
+            p_seller_id: userId,
+            p_payment_txnid: `ADMIN_VERIFIED_${Date.now()}`
+          });
+        } catch {}
+      }
     }
 
-    setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, subscriptionStatus: subStatus } : u)));
+    setUsers((prev) =>
+      prev.map((u) =>
+        u.id === userId
+          ? {
+              ...u,
+              subscriptionStatus: subStatus,
+              sellerVerified: subStatus === 'active' ? true : u.sellerVerified
+            }
+          : u
+      )
+    );
     await addAuditLog(
       'SUBSCRIPTION_UPDATED',
       'seller',
       userId,
       `Subscription for ${targetUser.email} updated to: ${subStatus.toUpperCase()}`
     );
-    showToast(`Subscription status updated to ${subStatus}.`, 'success');
+    showToast(`Seller membership updated to ${subStatus}.`, 'success');
     return { success: true };
   };
 
@@ -462,6 +577,21 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (res.success) {
       await addAuditLog('PRODUCT_REJECTED', 'product', productId, `Product ${productId} rejected. Reason: ${reason}`);
       showToast('Product rejected and returned to seller.', 'info');
+    }
+    return res;
+  };
+
+  const suspendProduct = async (productId: string, reason: string): Promise<{ success: boolean; error?: string }> => {
+    if (!isSuperAdmin) return { success: false, error: 'Unauthorized' };
+    const res = await updateProduct(productId, {
+      approvalStatus: 'rejected',
+      status: 'draft',
+      rejectionReason: reason || 'Suspended by ClickBarry Moderation'
+    });
+
+    if (res.success) {
+      await addAuditLog('PRODUCT_SUSPENDED', 'product', productId, `Product ${productId} suspended from Marketplace. Reason: ${reason}`);
+      showToast('Product suspended from Marketplace.', 'info');
     }
     return res;
   };
@@ -568,7 +698,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     if (supabase) {
-      const { error } = await supabase.from('website_settings').upsert({
+      const payload: any = {
         id: 'clickbarry_main',
         site_name: merged.siteName,
         tagline: merged.tagline,
@@ -582,19 +712,36 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         currency_symbol: merged.currencySymbol,
         min_withdrawal_amount: merged.minWithdrawalAmount,
         max_withdrawal_amount: merged.maxWithdrawalAmount,
+        withdrawal_fee_percentage: merged.withdrawalFeePercentage,
         seller_subscription_price: merged.sellerSubscriptionPrice,
         platform_fee_percentage: merged.platformFeePercentage,
+        affiliate_commission_min: merged.affiliateCommissionMin,
+        affiliate_commission_max: merged.affiliateCommissionMax,
+        referral_commission_percentage: merged.referralCommissionPercentage,
+        seller_referral_bonus: merged.sellerReferralBonus,
+        referral_revenue_basis: merged.referralRevenueBasis,
         featured_product_ids: merged.featuredProductIds,
         banner_announcement: merged.bannerAnnouncement,
         is_registration_open: merged.isRegistrationOpen,
         is_maintenance_mode: merged.isMaintenanceMode,
         updated_at: merged.updatedAt
-      });
+      };
+      const { error } = await supabase.from('website_settings').upsert(payload);
       if (error) return { success: false, error: error.message };
+
+      try {
+        await supabase.from('payout_settings').upsert({
+          id: 'default',
+          min_withdrawal_amount: merged.minWithdrawalAmount,
+          max_withdrawal_amount: merged.maxWithdrawalAmount,
+          withdrawal_fee_percentage: merged.withdrawalFeePercentage,
+          updated_at: merged.updatedAt
+        });
+      } catch {}
     }
 
     setSettings(merged);
-    await addAuditLog('SETTINGS_UPDATED', 'settings', 'clickbarry_main', 'Platform website settings updated.');
+    await addAuditLog('SETTINGS_UPDATED', 'settings', 'clickbarry_main', 'Platform website & monetization settings updated.');
     showToast('Platform settings saved successfully!', 'success');
     return { success: true };
   };
@@ -605,6 +752,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const filteredUsers = users.filter((u) => isInDateRange(u.createdAt));
     const filteredComms = comms.filter((c) => isInDateRange(c.createdAt));
     const filteredWithdrawals = allWithdrawals.filter((w) => isInDateRange(w.createdAt));
+    const filteredFees = platformFeesLedger.filter((f) => isInDateRange(f.createdAt));
+    const filteredSales = salesLedger.filter((s) => isInDateRange(s.createdAt));
+    const filteredReferrals = adminReferralCommissions.filter((r) => isInDateRange(r.createdAt));
 
     const paidSellers = filteredUsers.filter((u) => u.subscriptionStatus === 'active' && u.role !== 'admin');
     const sellerSubscriptionRevenue = paidSellers.reduce((sum, u) => sum + (u.subscriptionPrice || 999), 0);
@@ -620,19 +770,49 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const totalAffiliateWithdrawalRequests = filteredWithdrawals.reduce((sum, w) => sum + w.amount, 0);
     const actualAffiliatePayouts = filteredWithdrawals
       .filter((w) => w.status === 'paid')
-      .reduce((sum, w) => sum + w.amount, 0);
+      .reduce((sum, w) => sum + (w.netPayableAmount || w.amount), 0);
     const pendingWithdrawalsVolume = filteredWithdrawals
       .filter((w) => w.status === 'pending' || w.status === 'approved' || w.status === 'processing')
       .reduce((sum, w) => sum + w.amount, 0);
 
-    const platformFees = 0;
-    const refundsAndReversals = 0;
-    const actualPlatformNetRevenue = sellerSubscriptionRevenue + platformFees - refundsAndReversals;
+    const sellerSaleFees =
+      filteredFees
+        .filter((f) => f.sourceType === 'seller_sale_fee')
+        .reduce((sum, f) => sum + f.feeAmount, 0) ||
+      filteredSales
+        .filter((s) => s.status === 'verified')
+        .reduce((sum, s) => sum + s.platformFeeAmount, 0);
+
+    const affiliateWithdrawalFees =
+      filteredFees
+        .filter((f) => f.sourceType === 'affiliate_withdrawal_fee')
+        .reduce((sum, f) => sum + f.feeAmount, 0) ||
+      filteredWithdrawals
+        .filter((w) => w.status === 'paid')
+        .reduce((sum, w) => sum + w.platformFeeAmount, 0);
+
+    const platformFees = Math.round((sellerSaleFees + affiliateWithdrawalFees) * 100) / 100;
+
+    const referralEarnings = filteredReferrals
+      .filter((r) => r.status === 'approved' || r.status === 'paid')
+      .reduce((sum, r) => sum + r.rewardAmount, 0);
+
+    const refundsAndReversals = filteredSales
+      .filter((s) => s.status === 'refunded')
+      .reduce((sum, s) => sum + s.saleAmount, 0);
+
+    const actualPlatformNetRevenue = Math.max(
+      0,
+      Math.round((sellerSubscriptionRevenue + platformFees - referralEarnings - refundsAndReversals) * 100) / 100
+    );
 
     return {
       period: dateFilter.toUpperCase(),
       sellerSubscriptionRevenue,
+      sellerSaleFees,
+      affiliateWithdrawalFees,
       platformFees,
+      referralEarnings,
       verifiedSellerCommission: internalCommissions,
       externalNetworkCommission: externalCommissions,
       totalAffiliateWithdrawalRequests,
@@ -642,7 +822,17 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       actualPlatformNetRevenue,
       reconciliationStatus: 'balanced'
     };
-  }, [users, allCommissionRecords, commissionRecords, allWithdrawals, dateFilter, isInDateRange]);
+  }, [
+    users,
+    allCommissionRecords,
+    commissionRecords,
+    allWithdrawals,
+    platformFeesLedger,
+    salesLedger,
+    adminReferralCommissions,
+    dateFilter,
+    isInDateRange
+  ]);
 
   // CSV EXPORTER
   const exportToCsv = (
@@ -769,6 +959,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         updateSubscriptionStatus,
         approveProduct,
         rejectProduct,
+        suspendProduct,
         toggleFeaturedProduct,
         deleteProductAdmin,
         addCategory,
@@ -776,6 +967,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         deleteCategory,
         updateWebsiteSettings,
         addAuditLog,
+        platformFeesLedger,
+        salesLedger,
+        adminReferralCommissions,
         financialReport,
         exportToCsv,
         refreshAdminData: loadPlatformData

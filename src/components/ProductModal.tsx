@@ -14,7 +14,8 @@ import {
   Eye,
   MousePointerClick,
   Link2,
-  ArrowRight
+  ArrowRight,
+  Flag
 } from 'lucide-react';
 
 interface ProductModalProps {
@@ -25,6 +26,14 @@ interface ProductModalProps {
   onViewFullPage?: (product: Product) => void;
 }
 
+const REPORT_REASONS = [
+  'Broken or invalid product link',
+  'Misleading pricing or commission',
+  'Duplicate or spam listing',
+  'Copyright / Prohibited content',
+  'Other'
+];
+
 export const ProductModal: React.FC<ProductModalProps> = ({
   product,
   onClose,
@@ -32,17 +41,24 @@ export const ProductModal: React.FC<ProductModalProps> = ({
   onShopNowClick,
   onViewFullPage
 }) => {
-  const { recordView, recordClick, showToast } = useProducts();
+  const { recordView, recordClick, reportProduct, showToast } = useProducts();
   const { user, role } = useAuth();
   const { affiliateLinks, generateOrGetLink } = useHybridAffiliate();
 
   const [copied, setCopied] = useState(false);
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [showReportForm, setShowReportForm] = useState(false);
+  const [reportReason, setReportReason] = useState(REPORT_REASONS[0]);
+  const [reportDetails, setReportDetails] = useState('');
+  const [isReporting, setIsReporting] = useState(false);
 
   useEffect(() => {
     if (product) {
       recordView(product.id);
+      setShowReportForm(false);
+      setReportReason(REPORT_REASONS[0]);
+      setReportDetails('');
       const existing = affiliateLinks.find((l) => l.productId === product.id);
       if (existing) {
         setGeneratedUrl(`${window.location.origin}/?cb_trk=${encodeURIComponent(existing.uniqueTrackingSlug)}`);
@@ -53,6 +69,8 @@ export const ProductModal: React.FC<ProductModalProps> = ({
   }, [product?.id, affiliateLinks, recordView]);
 
   if (!product) return null;
+
+  const commissionInr = Math.round(product.price * ((product.commissionRate || 0) / 100));
 
   const handleGenerateAffiliateLink = async () => {
     if (!user) {
@@ -119,6 +137,17 @@ export const ProductModal: React.FC<ProductModalProps> = ({
     showToast('Destination URL unavailable.', 'error');
   };
 
+  const handleReportSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsReporting(true);
+    const res = await reportProduct(product.id, reportReason, reportDetails);
+    setIsReporting(false);
+    if (res.success) {
+      setShowReportForm(false);
+      setReportDetails('');
+    }
+  };
+
   const ctr = product.views > 0 ? ((product.clicks / product.views) * 100).toFixed(1) : '0.0';
 
   return (
@@ -163,8 +192,11 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 <span>{product.salesCount || 0} sales</span>
               </div>
 
-              <div className="pt-2 flex items-baseline gap-2">
+              <div className="pt-2 flex flex-wrap items-baseline justify-between gap-2">
                 <span className="text-3xl font-black text-white">₹{product.price}</span>
+                <span className="text-xs font-extrabold text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
+                  Affiliate Earns ₹{commissionInr} / sale
+                </span>
               </div>
 
               <div className="flex items-center gap-3 pt-1 text-[11px] text-slate-400">
@@ -210,7 +242,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 <span>Promote This Product</span>
               </span>
               <span className="text-emerald-400 font-bold">
-                Earn ₹{Math.round(product.price * (product.commissionRate / 100))} per sale
+                Earn ₹{commissionInr} per sale
               </span>
             </div>
 
@@ -248,10 +280,70 @@ export const ProductModal: React.FC<ProductModalProps> = ({
             )}
           </div>
 
+          {showReportForm && (
+            <form
+              onSubmit={handleReportSubmit}
+              className="p-4 rounded-2xl bg-red-950/30 border border-red-700/60 space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-red-200 flex items-center gap-1.5">
+                  <Flag className="w-3.5 h-3.5 text-red-400" />
+                  <span>Report This Product Listing</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setShowReportForm(false)}
+                  className="text-[11px] text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+              <select
+                value={reportReason}
+                onChange={(e) => setReportReason(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-xs text-white focus:outline-none focus:border-red-400"
+              >
+                {REPORT_REASONS.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+              <textarea
+                rows={2}
+                value={reportDetails}
+                onChange={(e) => setReportDetails(e.target.value)}
+                placeholder="Optional details to help platform moderators review this product..."
+                className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+              />
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={isReporting}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer disabled:opacity-60"
+                >
+                  {isReporting ? 'Submitting Report...' : 'Submit Report'}
+                </button>
+              </div>
+            </form>
+          )}
+
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-purple-900/60">
-            <div className="flex items-center gap-2 text-xs text-slate-400">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <span>Admin-Approved Marketplace Listing</span>
+            <div className="flex items-center gap-3 text-xs text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>Admin-Approved Listing</span>
+              </span>
+              {user && (
+                <button
+                  type="button"
+                  onClick={() => setShowReportForm((v) => !v)}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-300 hover:text-red-200 cursor-pointer"
+                >
+                  <Flag className="w-3 h-3" />
+                  <span>Report</span>
+                </button>
+              )}
             </div>
 
             <div className="flex items-center gap-2.5 w-full sm:w-auto">
@@ -282,3 +374,4 @@ export const ProductModal: React.FC<ProductModalProps> = ({
     </div>
   );
 };
+

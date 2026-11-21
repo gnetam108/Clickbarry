@@ -13,6 +13,7 @@ import {
   ArrowRight,
   Info
 } from 'lucide-react';
+import { calculateWithdrawalBreakdown } from '../lib/fees';
 
 interface WithdrawalRequestModalProps {
   isOpen: boolean;
@@ -109,8 +110,9 @@ export const WithdrawalRequestModal: React.FC<WithdrawalRequestModalProps> = ({
 
     setIsSubmitting(false);
     if (res.success && res.request) {
+      const bd = calculateWithdrawalBreakdown(numAmount, settings.withdrawalFeePercentage ?? 5);
       showToast(
-        `Withdrawal request #${res.request.requestNumber} for ₹${numAmount} submitted successfully!`,
+        `Withdrawal #${res.request.requestNumber} submitted: ₹${bd.grossAmount} gross (₹${bd.feeAmount} fee → ₹${bd.netPayable} net payout).`,
         'success'
       );
       onClose();
@@ -178,6 +180,30 @@ export const WithdrawalRequestModal: React.FC<WithdrawalRequestModalProps> = ({
               <span>Min: ₹{settings.minWithdrawalAmount}</span>
               <span>Max per request: ₹{settings.maxWithdrawalAmount.toLocaleString()}</span>
             </div>
+
+            {Number(amount) > 0 && (
+              <div className="mt-3 p-3.5 rounded-2xl bg-[#160d3d] border border-purple-700/70 space-y-1.5 text-xs">
+                {(() => {
+                  const breakdown = calculateWithdrawalBreakdown(Number(amount), settings.withdrawalFeePercentage ?? 5);
+                  return (
+                    <>
+                      <div className="flex justify-between text-slate-300">
+                        <span>Gross Withdrawal Amount:</span>
+                        <span className="font-bold text-white">₹{breakdown.grossAmount.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between text-amber-300">
+                        <span>ClickBarry Platform Fee ({breakdown.feePct}%):</span>
+                        <span className="font-bold">- ₹{breakdown.feeAmount.toLocaleString()}</span>
+                      </div>
+                      <div className="pt-1.5 border-t border-purple-800/70 flex justify-between text-sm font-black text-emerald-400">
+                        <span>Net Payout to Your Account:</span>
+                        <span>₹{breakdown.netPayable.toLocaleString()}</span>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
 
           {/* Payment Method Selector */}

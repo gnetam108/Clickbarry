@@ -61,7 +61,7 @@ export const Header: React.FC<HeaderProps> = ({
             />
           </div>
 
-          {/* Primary Public Navigation: Home | Marketplace | Affiliate | Seller */}
+          {/* Primary Navigation: Home | [Marketplace if logged in] | Affiliate | Seller */}
           <nav className="hidden lg:flex items-center gap-2 text-[14px] font-semibold text-slate-200">
             <button
               onClick={() => handleLinkClick('home')}
@@ -74,17 +74,19 @@ export const Header: React.FC<HeaderProps> = ({
               Home
             </button>
 
-            <button
-              onClick={() => handleLinkClick('marketplace')}
-              className={`px-4 py-1.5 rounded-full transition-all duration-200 whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer ${
-                isNavActive('marketplace')
-                  ? 'bg-gradient-to-r from-pink-600 to-rose-600 text-white shadow-md shadow-pink-600/25'
-                  : 'hover:text-pink-400'
-              }`}
-            >
-              <ShoppingBag className="w-3.5 h-3.5 text-pink-400" />
-              <span>Marketplace</span>
-            </button>
+            {user && (
+              <button
+                onClick={() => handleLinkClick('marketplace')}
+                className={`px-4 py-1.5 rounded-full transition-all duration-200 whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                  isNavActive('marketplace')
+                    ? 'bg-gradient-to-r from-pink-600 to-rose-600 text-white shadow-md shadow-pink-600/25'
+                    : 'hover:text-pink-400'
+                }`}
+              >
+                <ShoppingBag className="w-3.5 h-3.5 text-pink-400" />
+                <span>Marketplace</span>
+              </button>
+            )}
 
             <button
               onClick={() => handleLinkClick('affiliate')}
@@ -113,7 +115,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Right Auth & Action Controls */}
           <div className="hidden sm:flex items-center gap-3 shrink-0">
-            {onOpenSearch && (
+            {user && onOpenSearch && (
               <button
                 onClick={onOpenSearch}
                 aria-label="Search marketplace"
@@ -213,14 +215,16 @@ export const Header: React.FC<HeaderProps> = ({
             >
               Home
             </button>
-            <button
-              onClick={() => handleLinkClick('marketplace')}
-              className={`p-2.5 text-left rounded-lg text-sm font-medium cursor-pointer ${
-                isNavActive('marketplace') ? 'bg-pink-600 text-white' : 'text-slate-200 bg-purple-950/40'
-              }`}
-            >
-              Marketplace
-            </button>
+            {user && (
+              <button
+                onClick={() => handleLinkClick('marketplace')}
+                className={`p-2.5 text-left rounded-lg text-sm font-medium cursor-pointer ${
+                  isNavActive('marketplace') ? 'bg-pink-600 text-white' : 'text-slate-200 bg-purple-950/40'
+                }`}
+              >
+                Marketplace
+              </button>
+            )}
             <button
               onClick={() => handleLinkClick('affiliate')}
               className={`p-2.5 text-left rounded-lg text-sm font-medium cursor-pointer ${

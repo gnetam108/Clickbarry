@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { PageId, UserRole } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { useReferrals } from '../context/ReferralContext';
 import { StrawberryLogo } from '../components/StrawberryLogo';
+import { GoogleAuthButton } from '../components/GoogleAuthButton';
 import {
   User,
   Lock,
@@ -15,7 +17,8 @@ import {
   Eye,
   EyeOff,
   KeyRound,
-  ShieldCheck
+  ShieldCheck,
+  Gift
 } from 'lucide-react';
 
 interface LoginPageProps {
@@ -29,7 +32,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   initialRole = 'affiliate',
   initialAuthTab = 'login'
 }) => {
-  const { user, role, signIn, signUp, resetPasswordForEmail } = useAuth();
+  const { user, role, signIn, signUp, signInWithGoogle, oauthError, clearOAuthError, resetPasswordForEmail } = useAuth();
+  const { capturedReferrerCode } = useReferrals();
 
   const [authTab, setAuthTab] = useState<'login' | 'signup' | 'forgot'>(initialAuthTab);
   const [selectedRole, setSelectedRole] = useState<'affiliate' | 'seller'>(initialRole);
@@ -40,8 +44,27 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [showPassword, setShowPassword] = useState(false);
 
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+
+  useEffect(() => {
+    if (oauthError) {
+      setErrorMessage(oauthError);
+      clearOAuthError();
+    }
+  }, [oauthError, clearOAuthError]);
+
+  const handleGoogleAuth = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    setGoogleLoading(true);
+    const res = await signInWithGoogle(authTab === 'signup' ? selectedRole : 'affiliate');
+    if (!res.success) {
+      setGoogleLoading(false);
+      setErrorMessage(res.message);
+    }
+  };
 
   // Redirect already authenticated users to their appropriate dashboard
   useEffect(() => {
@@ -244,6 +267,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             </div>
           )}
 
+          {capturedReferrerCode && authTab !== 'forgot' && (
+            <div className="px-3.5 py-2.5 rounded-xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-200 text-xs flex items-center gap-2">
+              <Gift className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>
+                Referral Code <strong className="font-mono text-white">{capturedReferrerCode}</strong> captured — preserved across signup &amp; Google OAuth.
+              </span>
+            </div>
+          )}
+
           {errorMessage && (
             <div className="p-3.5 rounded-2xl bg-red-950/80 border border-red-500/70 text-red-200 text-xs font-medium flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
@@ -256,6 +288,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
               <span>{successMessage}</span>
             </div>
+          )}
+
+          {authTab !== 'forgot' && (
+            <GoogleAuthButton
+              onClick={handleGoogleAuth}
+              loading={googleLoading}
+              disabled={loading}
+              label={
+                authTab === 'signup'
+                  ? `Continue with Google (${selectedRole === 'seller' ? 'Seller' : 'Affiliate'})`
+                  : 'Continue with Google'
+              }
+            />
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">

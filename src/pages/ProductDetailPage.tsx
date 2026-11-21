@@ -13,7 +13,8 @@ import {
   ShieldCheck,
   Tag,
   Check,
-  ShoppingBag
+  ShoppingBag,
+  Flag
 } from 'lucide-react';
 
 interface ProductDetailPageProps {
@@ -27,9 +28,13 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   onNavigate,
   onOpenAffiliateSignup
 }) => {
-  const { products, recordView, recordClick, showToast } = useProducts();
+  const { products, recordView, recordClick, reportProduct, showToast } = useProducts();
   const { user, role } = useAuth();
   const [promoteOpen, setPromoteOpen] = useState(false);
+  const [showReportForm, setShowReportForm] = useState(false);
+  const [reportReason, setReportReason] = useState('Broken or invalid product link');
+  const [reportDetails, setReportDetails] = useState('');
+  const [isReporting, setIsReporting] = useState(false);
 
   const product: Product | undefined = products.find((p) => p.id === productId);
 
@@ -208,10 +213,79 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
               </button>
             </div>
 
-            <div className="pt-2 flex items-center gap-2 text-xs text-slate-400">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <span>Admin-approved ClickBarry Marketplace listing</span>
+            <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>Admin-approved ClickBarry Marketplace listing</span>
+              </div>
+              {user && (
+                <button
+                  type="button"
+                  onClick={() => setShowReportForm((v) => !v)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-300 hover:text-red-200 cursor-pointer"
+                >
+                  <Flag className="w-3.5 h-3.5" />
+                  <span>Report Product</span>
+                </button>
+              )}
             </div>
+
+            {showReportForm && (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setIsReporting(true);
+                  const res = await reportProduct(product.id, reportReason, reportDetails);
+                  setIsReporting(false);
+                  if (res.success) {
+                    setShowReportForm(false);
+                    setReportDetails('');
+                  }
+                }}
+                className="p-4 rounded-2xl bg-red-950/30 border border-red-700/60 space-y-3"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-red-200 flex items-center gap-1.5">
+                    <Flag className="w-3.5 h-3.5 text-red-400" />
+                    <span>Report Product Listing</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowReportForm(false)}
+                    className="text-[11px] text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <select
+                  value={reportReason}
+                  onChange={(e) => setReportReason(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-xs text-white focus:outline-none focus:border-red-400"
+                >
+                  <option value="Broken or invalid product link">Broken or invalid product link</option>
+                  <option value="Misleading pricing or commission">Misleading pricing or commission</option>
+                  <option value="Duplicate or spam listing">Duplicate or spam listing</option>
+                  <option value="Copyright / Prohibited content">Copyright / Prohibited content</option>
+                  <option value="Other">Other</option>
+                </select>
+                <textarea
+                  rows={2}
+                  value={reportDetails}
+                  onChange={(e) => setReportDetails(e.target.value)}
+                  placeholder="Optional details for platform moderators..."
+                  className="w-full px-3 py-2 rounded-xl bg-[#1b1046] border border-purple-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={isReporting}
+                    className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer disabled:opacity-60"
+                  >
+                    {isReporting ? 'Submitting...' : 'Submit Report'}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       </div>

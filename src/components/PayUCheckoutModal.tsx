@@ -16,7 +16,7 @@ interface PayUCheckoutModalProps {
 }
 
 export const PayUCheckoutModal: React.FC<PayUCheckoutModalProps> = () => {
-  const { isCheckoutOpen, closeCheckout, isLifetimeSeller } = usePayUMembership();
+  const { isCheckoutOpen, closeCheckout, isLifetimeSeller, membershipStatus, membershipStatusLabel } = usePayUMembership();
   const { user, profile } = useAuth();
 
   const [name, setName] = useState('');
@@ -31,6 +31,13 @@ export const PayUCheckoutModal: React.FC<PayUCheckoutModalProps> = () => {
 
   if (!isCheckoutOpen) return null;
 
+  const statusBadgeClass =
+    membershipStatus === 'active'
+      ? 'text-emerald-300 bg-emerald-500/20 border-emerald-500/40'
+      : membershipStatus === 'failed' || membershipStatus === 'refunded'
+      ? 'text-red-300 bg-red-500/20 border-red-500/40'
+      : 'text-amber-300 bg-amber-500/20 border-amber-500/40';
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
       <div className="w-full max-w-xl rounded-3xl bg-[#120a2e] border border-purple-800/80 shadow-2xl p-6 sm:p-8 space-y-6 relative overflow-hidden">
@@ -40,20 +47,20 @@ export const PayUCheckoutModal: React.FC<PayUCheckoutModalProps> = () => {
         {/* Header */}
         <div className="flex items-start justify-between relative z-10">
           <div className="space-y-1">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] font-extrabold uppercase tracking-widest text-pink-400 bg-pink-500/20 border border-pink-500/40 px-3 py-0.5 rounded-full flex items-center gap-1">
                 <Sparkles className="w-3 h-3" />
                 Lifetime Seller Pass
               </span>
-              <span className="text-[11px] font-bold text-amber-300 bg-amber-500/20 border border-amber-500/40 px-2 py-0.5 rounded-full">
-                PayU Gateway Pending
+              <span className={`text-[11px] font-bold border px-2.5 py-0.5 rounded-full ${statusBadgeClass}`}>
+                Status: {membershipStatusLabel}
               </span>
             </div>
             <h3 className="text-2xl font-black text-white tracking-tight">
               Seller Lifetime Membership (₹999)
             </h3>
             <p className="text-xs text-slate-300">
-              One-time payment of ₹999 INR. Lifetime access with zero monthly or renewal fees.
+              One-time payment of ₹999 INR. Unlocks your Seller Dashboard &amp; product publishing permanently after server payment verification.
             </p>
           </div>
           <button
@@ -81,36 +88,36 @@ export const PayUCheckoutModal: React.FC<PayUCheckoutModalProps> = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs pt-1 text-slate-200">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Unlimited Digital Product Listings</span>
+              <span>Unlock Full Seller Dashboard &amp; Publishing</span>
             </div>
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Real-time Product &amp; Sales Analytics</span>
+              <span>Real-time Product, Clicks &amp; Sales Analytics</span>
             </div>
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Verified Creator Profile Status</span>
+              <span>Verified Creator Profile &amp; Payout Ledger</span>
             </div>
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Marketplace Affiliate Promotion Access</span>
+              <span>Access to ClickBarry Affiliate Army</span>
             </div>
           </div>
         </div>
 
-        {/* Gateway Disabled Notice */}
+        {/* Gateway / Verification Notice */}
         <div className="p-4 rounded-2xl bg-amber-950/50 border border-amber-500/50 flex items-start gap-3 text-xs text-amber-100 relative z-10">
           <Clock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
           <div className="space-y-1">
             <span className="font-bold text-amber-300 block">
               {isLifetimeSeller
                 ? 'Your Seller Lifetime Membership is Active'
-                : 'PayU Checkout Temporarily Disabled'}
+                : 'PayU Gateway Activation Pending — Seller Dashboard Locked'}
             </span>
             <p className="text-slate-300 leading-relaxed">
               {isLifetimeSeller
-                ? 'Verified payment record found on your account. No additional fee is required.'
-                : 'Live PayU payment gateway verification is pending activation. Simulated/bypass payments are disabled so membership is only granted after verified server payment confirmation.'}
+                ? 'Verified ₹999 payment confirmed on your account. Your Seller Dashboard and product submission tools are unlocked.'
+                : 'Your Seller Dashboard and product submissions remain locked until live PayU payment verification completes. You can still browse the Affiliate Marketplace anytime.'}
             </p>
           </div>
         </div>
@@ -123,7 +130,7 @@ export const PayUCheckoutModal: React.FC<PayUCheckoutModalProps> = () => {
           </span>
         </div>
 
-        {/* Billing Summary (Read-only Preview) */}
+        {/* Billing Summary */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs relative z-10">
           <div>
             <label className="font-bold text-slate-300 block mb-1">Seller Full Name</label>
@@ -155,14 +162,18 @@ export const PayUCheckoutModal: React.FC<PayUCheckoutModalProps> = () => {
             className="w-full py-3.5 rounded-2xl bg-slate-800/80 border border-purple-800/60 text-slate-400 font-extrabold text-sm flex items-center justify-center gap-2 cursor-not-allowed"
           >
             <Lock className="w-4 h-4" />
-            <span>Pay ₹999 with PayU (Gateway Activation Pending)</span>
+            <span>
+              {isLifetimeSeller
+                ? 'Lifetime Seller Pass Already Active'
+                : 'Pay ₹999 with PayU (Gateway Activation Pending)'}
+            </span>
           </button>
         </div>
 
         <div className="flex items-center justify-between pt-2 border-t border-purple-900/60 text-[11px] text-slate-400 relative z-10">
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>PayU Hosted Checkout Architecture Ready</span>
+            <span>Server-Verified Payment Lock Enforced</span>
           </div>
           <span>One-Time ₹999 INR</span>
         </div>

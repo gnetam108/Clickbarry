@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PageId } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { useReferrals } from '../context/ReferralContext';
+import { GoogleAuthButton } from '../components/GoogleAuthButton';
 import affiliateCoinsImage from '../assets/images/affiliate_coins_chart_1794019709558.jpg';
 import {
   TrendingUp,
@@ -17,7 +19,8 @@ import {
   AlertCircle,
   CheckCircle2,
   LayoutDashboard,
-  ShieldCheck
+  ShieldCheck,
+  Gift
 } from 'lucide-react';
 
 interface ForAffiliatesPageProps {
@@ -26,7 +29,8 @@ interface ForAffiliatesPageProps {
 }
 
 export const ForAffiliatesPage: React.FC<ForAffiliatesPageProps> = ({ onNavigate }) => {
-  const { user, role, signIn, signUp } = useAuth();
+  const { user, role, signIn, signUp, signInWithGoogle, oauthError, clearOAuthError } = useAuth();
+  const { capturedReferrerCode } = useReferrals();
 
   const [authTab, setAuthTab] = useState<'register' | 'login'>('register');
   const [fullName, setFullName] = useState('');
@@ -35,8 +39,27 @@ export const ForAffiliatesPage: React.FC<ForAffiliatesPageProps> = ({ onNavigate
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+
+  useEffect(() => {
+    if (oauthError) {
+      setErrorMessage(oauthError);
+      clearOAuthError();
+    }
+  }, [oauthError, clearOAuthError]);
+
+  const handleGoogleAffiliateAuth = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    setGoogleLoading(true);
+    const res = await signInWithGoogle('affiliate');
+    if (!res.success) {
+      setGoogleLoading(false);
+      setErrorMessage(res.message);
+    }
+  };
 
   // Earnings Calculator state
   const [dailyClicks, setDailyClicks] = useState(100);
@@ -215,6 +238,15 @@ export const ForAffiliatesPage: React.FC<ForAffiliatesPageProps> = ({ onNavigate
                   </button>
                 </div>
 
+                {capturedReferrerCode && (
+                  <div className="px-3 py-2 rounded-xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-200 text-xs flex items-center gap-2">
+                    <Gift className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>
+                      Invited with Referral Code <strong className="font-mono text-white">{capturedReferrerCode}</strong>
+                    </span>
+                  </div>
+                )}
+
                 {errorMessage && (
                   <div className="p-3 rounded-xl bg-red-950/80 border border-red-500/70 text-red-200 text-xs flex items-start gap-2">
                     <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
@@ -228,6 +260,13 @@ export const ForAffiliatesPage: React.FC<ForAffiliatesPageProps> = ({ onNavigate
                     <span>{successMessage}</span>
                   </div>
                 )}
+
+                <GoogleAuthButton
+                  onClick={handleGoogleAffiliateAuth}
+                  loading={googleLoading}
+                  disabled={loading}
+                  label="Continue with Google"
+                />
 
                 <form onSubmit={handleAffiliateAuth} className="space-y-3">
                   {authTab === 'register' && (
